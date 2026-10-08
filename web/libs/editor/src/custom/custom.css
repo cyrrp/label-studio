@@ -1,0 +1,114 @@
+.lsx-custom--unknown {
+  padding: 8px 12px;
+  border: 1px dashed var(--color-neutral-border, #d9d9d9);
+  border-radius: 6px;
+  color: var(--color-neutral-content-subtler, #888);
+  font-size: 13px;
+}
+
+.lsx-wizard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-family: inherit;
+}
+
+.lsx-wizard--empty {
+  color: var(--color-neutral-content-subtler, #888);
+  font-size: 13px;
+}
+
+.lsx-wizard__steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lsx-wizard__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid var(--color-neutral-border, #d9d9d9);
+  border-radius: 16px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--color-neutral-content, #333);
+}
+
+.lsx-wizard__step:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.lsx-wizard__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-neutral-surface, #f0f0f0);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lsx-wizard__step--current {
+  border-color: var(--color-primary-border, #617be0);
+  color: var(--color-primary-content, #2f4bd7);
+}
+
+.lsx-wizard__step--current .lsx-wizard__num {
+  background: var(--color-primary-surface, #617be0);
+  color: #fff;
+}
+
+.lsx-wizard__step--done .lsx-wizard__num {
+  background: var(--color-positive-surface, #52c41a);
+  color: #fff;
+}
+
+.lsx-wizard__nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lsx-wizard__counter {
+  font-size: 12px;
+  color: var(--color-neutral-content-subtler, #888);
+}
+
+.lsx-wizard__btn {
+  padding: 6px 16px;
+  border: 1px solid var(--color-neutral-border, #d9d9d9);
+  border-radius: 6px;
+  background: var(--color-neutral-surface, #fff);
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--color-neutral-content, #333);
+}
+
+.lsx-wizard__btn:hover:not(:disabled) {
+  border-color: var(--color-primary-border, #617be0);
+  color: var(--color-primary-content, #2f4bd7);
+}
+
+.lsx-wizard__btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.lsx-wizard__btn--primary {
+  background: var(--color-primary-surface, #617be0);
+  border-color: var(--color-primary-border, #617be0);
+  color: #fff;
+}
+
+.lsx-wizard__btn--primary:hover:not(:disabled) {
+  background: var(--color-primary-surface-hover, #4f6bd8);
+  color: #fff;
+}

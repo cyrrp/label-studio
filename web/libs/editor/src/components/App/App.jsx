@@ -20,6 +20,8 @@ import "../../tags/object";
 import "../../tags/control";
 import "../../tags/visual";
 import "../../tags/Custom";
+// Fork: real `custominterface` implementation + helpers (overrides the stub above)
+import "../../custom";
 
 /**
  * Utils and common components
