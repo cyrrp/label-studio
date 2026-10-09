@@ -243,6 +243,8 @@ export class LSFWrapper {
       onDeleteAnnotation: this.onDeleteAnnotation,
       onSkipTask: this.onSkipTask,
       onUnskipTask: this.onUnskipTask,
+      onAcceptAnnotation: this.onAcceptAnnotation,
+      onRejectAnnotation: this.onRejectAnnotation,
       onGroundTruth: this.onGroundTruth,
       onEntityCreate: this.onEntityCreate,
       onEntityDelete: this.onEntityDelete,
@@ -1074,6 +1076,98 @@ export class LSFWrapper {
 
     this.showOperationToast(status, "Task skipped successfully", "Task is not skipped", result);
   };
+
+  /**
+   * Community/EE review workflow: accept (or fix-and-accept) the currently
+   * selected foreign annotation.
+   * @private
+   */
+  onAcceptAnnotation = async (ls, { isDirty, entity } = {}) => {
+    const annotation = entity ?? this.currentAnnotation;
+
+    if (!annotation?.pk) return;
+
+    const body = { result: "accepted" };
+
+    if (isDirty) {
+      // any result override is stored by the backend as "fixed_and_accepted"
+      body.annotation_result = annotation.serializeAnnotation() ?? [];
+    }
+
+    const result = await this.withinLoadingState(async () => {
+      return this.datamanager.apiCall("createAnnotationReview", { annotationID: annotation.pk }, { body });
+    });
+    const status = result?.$meta?.status;
+
+    this.showOperationToast(status, "Annotation accepted", "Annotation is not reviewed", result);
+
+    if (status === undefined || status >= 400) return;
+
+    const acceptedState = result?.result ?? (isDirty ? "fixed_and_accepted" : "accepted");
+
+    annotation.setAcceptedState?.(acceptedState);
+    this.syncStoredAnnotation(annotation, acceptedState, body.annotation_result);
+    this.datamanager.invoke("acceptAnnotation", ls, annotation, result);
+
+    await this.afterReviewSubmitted(annotation);
+  };
+
+  /**
+   * Community/EE review workflow: reject the currently selected foreign
+   * annotation, optionally with a review comment.
+   * @private
+   */
+  onRejectAnnotation = async (ls, { entity, comment } = {}) => {
+    const annotation = entity ?? this.currentAnnotation;
+
+    if (!annotation?.pk) return;
+
+    const body = { result: "rejected" };
+
+    if (comment) body.comment = comment;
+
+    const result = await this.withinLoadingState(async () => {
+      return this.datamanager.apiCall("createAnnotationReview", { annotationID: annotation.pk }, { body });
+    });
+    const status = result?.$meta?.status;
+
+    this.showOperationToast(status, "Annotation rejected", "Annotation is not reviewed", result);
+
+    if (status === undefined || status >= 400) return;
+
+    annotation.setAcceptedState?.("rejected");
+    this.syncStoredAnnotation(annotation, "rejected");
+    this.datamanager.invoke("rejectAnnotation", ls, annotation, result);
+
+    await this.afterReviewSubmitted(annotation);
+  };
+
+  /**
+   * Keep the DM task store's copy of the annotation in sync after a review.
+   * @private
+   */
+  syncStoredAnnotation(annotation, acceptedState, result) {
+    const storedAnnotation = this.task?.annotations?.find(
+      (a) => Number(a.pk ?? a.id) === Number(annotation.pk),
+    );
+
+    if (!storedAnnotation) return;
+    storedAnnotation.accepted_state = acceptedState;
+    if (result !== undefined) storedAnnotation.result = result;
+  }
+
+  /**
+   * After a review is submitted, label stream moves to the next task while
+   * Quick View reloads the current task to reflect the new review state.
+   * @private
+   */
+  async afterReviewSubmitted(annotation) {
+    if (this.labelStream) {
+      await this.loadTask();
+    } else {
+      await this.loadTask(this.task.id, annotation.pk, true);
+    }
+  }
 
   onUnskipTask = async () => {
     const { task, currentAnnotation } = this;

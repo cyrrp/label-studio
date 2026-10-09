@@ -267,3 +267,173 @@ def bulk_update_is_labeled_by_overlap(tasks_ids, project):
         Task.objects.filter(id__in=batch_ids, project=project).exclude(id__in=finished_task_ids).update(
             is_labeled=False
         )
+
+
+# ---------------------------------------------------------------------------
+# Review workflow: Data Manager annotation helpers
+#
+# Registered into settings.DATA_MANAGER_ANNOTATIONS_MAP from TasksConfig.ready()
+# via data_manager.managers.update_annotation_map so that community review
+# columns (reviewed / reviewers / reviews_accepted / reviews_rejected /
+# reviewed_at) work without touching the data_manager app.
+# ---------------------------------------------------------------------------
+
+
+def annotate_reviewed(queryset):
+    """`reviewed` column: True when the task has at least one non-rejected review."""
+    from django.db.models import Exists, OuterRef
+    from tasks.choices import ReviewResult
+    from tasks.models import AnnotationReview
+
+    reviewed = Exists(
+        AnnotationReview.objects.filter(
+            annotation__task=OuterRef('pk'),
+            result__in=[ReviewResult.ACCEPTED, ReviewResult.FIXED_AND_ACCEPTED],
+        )
+    )
+    return queryset.annotate(reviewed=reviewed)
+
+
+def _reviewers_string_agg(expression):
+    """Comma-joined list of user ids for both SQLite and Postgres."""
+    from django.conf import settings as dj_settings
+    from django.db.models import Aggregate, Value
+    from django.db.models.fields import CharField, TextField
+    from django.db.models.functions import Cast, Coalesce
+
+    if dj_settings.DJANGO_DB == dj_settings.DJANGO_DB_SQLITE:
+        # data_manager.managers.GroupConcat doesn't support distinct=True,
+        # so use a local aggregate that does
+        class _GroupConcatDistinct(Aggregate):
+            function = 'GROUP_CONCAT'
+            template = '%(function)s(%(distinct)s%(expressions)s)'
+            allow_distinct = True
+
+        return Coalesce(
+            _GroupConcatDistinct(Cast(expression, output_field=TextField()), distinct=True),
+            Value(''),
+            output_field=CharField(),
+        )
+
+    from django.contrib.postgres.aggregates import StringAgg
+
+    return Coalesce(
+        StringAgg(Cast(expression, output_field=TextField()), delimiter=',', distinct=True),
+        Value(''),
+        output_field=CharField(),
+    )
+
+
+def annotate_reviewers(queryset):
+    """`reviewers` column: users who reviewed the task + users assigned as reviewers."""
+    from django.db.models import Case, F, Value, When
+    from django.db.models.fields import CharField
+    from django.db.models.functions import Concat
+    from tasks.models import TaskAssignment
+
+    reviewed_by = _reviewers_string_agg('annotations__reviews__created_by')
+    assigned_reviewers = _reviewers_string_agg(
+        Case(
+            When(assignments__role=TaskAssignment.Role.REVIEWER, then=F('assignments__user')),
+            output_field=CharField(),
+        )
+    )
+    queryset = queryset.annotate(_reviewed_by=reviewed_by, _assigned_reviewers=assigned_reviewers)
+    return queryset.annotate(
+        reviewers=Case(
+            When(_reviewed_by='', then=F('_assigned_reviewers')),
+            When(_assigned_reviewers='', then=F('_reviewed_by')),
+            default=Concat(F('_reviewed_by'), Value(','), F('_assigned_reviewers')),
+            output_field=CharField(),
+        )
+    )
+
+
+def annotate_reviews_rejected(queryset):
+    """`reviews_rejected` column: number of rejected reviews on the task."""
+    from django.db.models import Count, Q
+    from tasks.choices import ReviewResult
+
+    return queryset.annotate(
+        reviews_rejected=Count(
+            'annotations__reviews', filter=Q(annotations__reviews__result=ReviewResult.REJECTED), distinct=True
+        )
+    )
+
+
+def annotate_reviews_accepted(queryset):
+    """`reviews_accepted` column: accepted + fixed_and_accepted reviews on the task."""
+    from django.db.models import Count, Q
+    from tasks.choices import ReviewResult
+
+    return queryset.annotate(
+        reviews_accepted=Count(
+            'annotations__reviews',
+            filter=Q(
+                annotations__reviews__result__in=[ReviewResult.ACCEPTED, ReviewResult.FIXED_AND_ACCEPTED]
+            ),
+            distinct=True,
+        )
+    )
+
+
+def annotate_reviewed_at(queryset):
+    """`reviewed_at`: last time a review was written on the task."""
+    from django.db.models import Max
+
+    return queryset.annotate(reviewed_at=Max('annotations__reviews__updated_at'))
+
+
+REVIEW_ANNOTATIONS_MAP = {
+    'reviewed': annotate_reviewed,
+    'reviewers': annotate_reviewers,
+    'reviews_rejected': annotate_reviews_rejected,
+    'reviews_accepted': annotate_reviews_accepted,
+    'reviewed_at': annotate_reviewed_at,
+}
+
+
+def register_review_annotation_map():
+    """Register review columns into settings.DATA_MANAGER_ANNOTATIONS_MAP.
+
+    Called from TasksConfig.ready(); kept out of data_manager/* on purpose
+    (community edition can't edit that app).
+    """
+    from data_manager.managers import update_annotation_map
+
+    update_annotation_map(REVIEW_ANNOTATIONS_MAP)
+
+
+def review_custom_filter_expressions(_filter, field_name, project, request=None, is_child_filter=False):
+    """Data Manager custom filter hook for review columns.
+
+    data_manager.managers.apply_filters() resolves
+    settings.DATA_MANAGER_CUSTOM_FILTER_EXPRESSIONS via load_func() on every
+    call; TasksConfig.ready() replaces data_manager.functions.custom_filter_expressions
+    (a no-op stub in community) with this function, so it must delegate to the
+    default behavior by returning None for fields it doesn't handle.
+    """
+    if field_name != 'reviewers':
+        return None
+
+    from django.db.models import Exists, OuterRef, Q
+    from tasks.models import AnnotationReview, TaskAssignment
+
+    operator = getattr(_filter, 'operator', '')
+    if operator in ('contains', 'not_contains'):
+        user_id = int(_filter.value)
+        reviewed = Exists(AnnotationReview.objects.filter(annotation__task=OuterRef('pk'), created_by_id=user_id))
+        assigned = Exists(
+            TaskAssignment.objects.filter(task=OuterRef('pk'), user_id=user_id, role=TaskAssignment.Role.REVIEWER)
+        )
+        q = Q(reviewed) | Q(assigned)
+        return q if operator == 'contains' else ~q
+    if operator == 'empty':
+        from core.utils.params import cast_bool_from_str
+
+        value = cast_bool_from_str(_filter.value)
+        reviewed = Exists(AnnotationReview.objects.filter(annotation__task=OuterRef('pk')))
+        assigned = Exists(TaskAssignment.objects.filter(task=OuterRef('pk'), role=TaskAssignment.Role.REVIEWER))
+        q = Q(reviewed) | Q(assigned)
+        return ~q if value else q
+    return None

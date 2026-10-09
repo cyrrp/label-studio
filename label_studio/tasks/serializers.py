@@ -12,6 +12,7 @@ from core.utils.db import fast_first
 from core.utils.exceptions import extract_message
 from django.conf import settings
 from django.db import IntegrityError, transaction
+from django.db.models import F
 from drf_spectacular.utils import extend_schema_field
 from fsm.serializer_fields import FSMStateField
 from fsm.state_inference import get_or_infer_state
@@ -24,11 +25,12 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.fields import SkipField
 from rest_framework.serializers import ModelSerializer
 from rest_framework.settings import api_settings
+from tasks.choices import ActionType, ReviewResult
 from tasks.exceptions import AnnotationDuplicateError
-from tasks.models import Annotation, AnnotationDraft, Prediction, PredictionMeta, Task
+from tasks.models import Annotation, AnnotationDraft, AnnotationReview, Prediction, PredictionMeta, Task
 from tasks.validation import TaskValidator
 from users.models import User
-from users.serializers import UserSerializer
+from users.serializers import UserSerializer, UserSimpleSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,42 @@ class CompletedByDMSerializer(UserSerializer):
         fields = ['id', 'first_name', 'last_name', 'username', 'last_activity', 'avatar', 'email', 'initials']
 
 
+class AnnotationReviewSerializer(ModelSerializer):
+    """Serializer for AnnotationReview records (accept / reject / fix-and-accept).
+
+    `created_by` is serialized as a user object with `email` so reviews survive
+    export/import round trips (see BaseTaskSerializerBulk._insert_valid_user_reviews).
+
+    For EE-shaped payloads `accepted` (bool) is accepted on input and mapped to
+    `result`: accepted=True -> 'accepted', accepted=False -> 'rejected'.
+    The EE 'fixed' alias maps to 'fixed_and_accepted'.
+    """
+
+    created_by = UserSimpleSerializer(read_only=True)
+    # output: mirrors EE — True for accepted / fixed_and_accepted, False for rejected.
+    # input: EE-shaped `{"accepted": bool}` payloads are normalized in to_internal_value.
+    accepted = serializers.SerializerMethodField(read_only=True)
+
+    def get_accepted(self, review) -> bool:
+        return review.result != ReviewResult.REJECTED
+
+    def to_internal_value(self, data):
+        data = dict(data)
+        # EE-shaped payload: `accepted` flag wins over `result` only when result is absent
+        if 'result' not in data and 'accepted' in data:
+            data['result'] = ReviewResult.ACCEPTED if data.pop('accepted') else ReviewResult.REJECTED
+        else:
+            data.pop('accepted', None)
+        if data.get('result') == 'fixed':  # EE alias
+            data['result'] = ReviewResult.FIXED_AND_ACCEPTED
+        return super().to_internal_value(data)
+
+    class Meta:
+        model = AnnotationReview
+        fields = ('id', 'annotation', 'created_by', 'result', 'comment', 'created_at', 'updated_at', 'accepted')
+        read_only_fields = ('id', 'created_by', 'created_at', 'updated_at')
+
+
 class AnnotationSerializer(FlexFieldsModelSerializer):
     """
     Annotation Serializer with FSM state support.
@@ -151,6 +189,8 @@ class AnnotationSerializer(FlexFieldsModelSerializer):
     created_ago = serializers.CharField(default='', read_only=True, help_text='Time delta from creation time')
     completed_by = serializers.PrimaryKeyRelatedField(required=False, queryset=User.objects.all())
     unique_id = serializers.CharField(required=False, write_only=True)
+    # latest review result ('accepted'/'rejected'/'fixed_and_accepted') read by LSF as entity.acceptedState
+    accepted_state = serializers.SerializerMethodField(read_only=True)
 
     def create(self, *args, **kwargs):
         try:
@@ -191,6 +231,17 @@ class AnnotationSerializer(FlexFieldsModelSerializer):
         name += f' {user.email}, {user.id}'
         return name
 
+    def get_accepted_state(self, annotation) -> str:
+        """Review status of the annotation consumed by the editor (sn.accepted_state).
+
+        Derived from `last_action`, which is only ever written by the review
+        workflow in community edition (accept/reject/fix-and-accept/delete review).
+        """
+        action = getattr(annotation, 'last_action', None)
+        if action in (ActionType.ACCEPTED, ActionType.REJECTED, ActionType.FIXED_AND_ACCEPTED):
+            return action
+        return None
+
     def to_representation(self, obj):
         """Remove state field if feature flags are disabled"""
         ret = super().to_representation(obj)
@@ -205,7 +256,11 @@ class AnnotationSerializer(FlexFieldsModelSerializer):
     class Meta:
         model = Annotation
         exclude = ['prediction', 'result_count']
-        expandable_fields = {'completed_by': (CompletedByDMSerializer,)}
+        expandable_fields = {
+            'completed_by': (CompletedByDMSerializer,),
+            # expanded via ?expand=annotations.reviews (review mode / io_storages exports)
+            'reviews': (AnnotationReviewSerializer, {'many': True}),
+        }
 
 
 class AnnotationStubSerializer(FlexFieldsModelSerializer):
@@ -287,6 +342,33 @@ class TaskSimpleSerializer(FlexFieldsModelSerializer):
 class BaseTaskSerializer(FlexFieldsModelSerializer):
     """Task Serializer with project scheme configs validation"""
 
+    # Community review workflow: these read-only fields are only present when the
+    # queryset was annotated by the corresponding DATA_MANAGER_ANNOTATIONS_MAP
+    # entry (registered from tasks.functions). Missing attrs -> field omitted.
+    reviewed = serializers.BooleanField(required=False, read_only=True)
+    reviews_rejected = serializers.IntegerField(required=False, read_only=True)
+    reviews_accepted = serializers.IntegerField(required=False, read_only=True)
+    reviewed_at = serializers.DateTimeField(required=False, read_only=True)
+    reviewers = serializers.SerializerMethodField(required=False, read_only=True)
+    reviewers_count = serializers.SerializerMethodField(required=False, read_only=True)
+
+    def get_reviewers(self, task):
+        """List of reviewer ids (from reviews and/or reviewer assignments)."""
+        if not hasattr(task, 'reviewers'):
+            return []
+        reviewers = task.reviewers
+        if not reviewers:
+            return []
+        if isinstance(reviewers, str):
+            reviewers = [int(v) for v in reviewers.split(',') if v.strip().isdigit()]
+        reviewers = [r for r in reviewers if r is not None]
+        return list(set(reviewers))
+
+    def get_reviewers_count(self, task):
+        if not hasattr(task, 'reviewers'):
+            return None
+        return len(self.get_reviewers(task))
+
     def project(self, task=None):
         """Take the project from context"""
         if 'project' in self.context:
@@ -334,7 +416,20 @@ class BaseTaskSerializer(FlexFieldsModelSerializer):
             data = instance.data
             replace_task_data_undefined_with_config_field(data, project)
 
-        return super().to_representation(instance)
+        ret = super().to_representation(instance)
+
+        # review columns are only serialized when the prepared queryset
+        # actually evaluated them (see tasks.functions.REVIEW_ANNOTATIONS_MAP);
+        # declared serializer fields fall back to empty values otherwise, so
+        # strip them to keep ordinary task payloads unchanged
+        if not hasattr(instance, 'reviewers'):
+            ret.pop('reviewers', None)
+            ret.pop('reviewers_count', None)
+        for field_name in ('reviewed', 'reviews_rejected', 'reviews_accepted', 'reviewed_at'):
+            if not hasattr(instance, field_name):
+                ret.pop(field_name, None)
+
+        return ret
 
     class Meta:
         model = Task
@@ -651,8 +746,66 @@ class BaseTaskSerializerBulk(serializers.ListSerializer):
         return None  # No errors
 
     def add_reviews(self, task_reviews, annotation_mapping, project):
-        """Save task reviews to DB"""
-        return []
+        """Save task annotation reviews to DB.
+
+        task_reviews is a flat list of per-annotation review lists that aligns
+        positionally with self.db_annotations (each extracted review list was
+        appended once per annotation in create()). Each review dict may also
+        carry the original `annotation` id, resolved through annotation_mapping.
+        """
+        db_reviews = []
+
+        for k, reviews in enumerate(task_reviews):
+            for review in reviews:
+                if not isinstance(review, dict):
+                    continue
+
+                # prefer the explicit annotation link, fall back to flat ordering
+                annotation_id = annotation_mapping.get(review.get('annotation'))
+                if annotation_id is None and k < len(self.db_annotations):
+                    annotation_id = self.db_annotations[k].id
+                if annotation_id is None:
+                    continue
+
+                result = review.get('result')
+                if result == 'fixed':  # EE alias
+                    result = ReviewResult.FIXED_AND_ACCEPTED
+                elif result is None and 'accepted' in review:
+                    result = ReviewResult.ACCEPTED if review.get('accepted') else ReviewResult.REJECTED
+                if result not in ReviewResult.values:
+                    continue
+
+                db_reviews.append(
+                    AnnotationReview(
+                        annotation_id=annotation_id,
+                        created_by_id=review.get('created_by_id'),
+                        result=result,
+                        comment=review.get('comment'),
+                    )
+                )
+
+        # dedupe inside the batch so unique_together(annotation, created_by) holds
+        seen = set()
+        unique_reviews = []
+        for review in db_reviews:
+            key = (review.annotation_id, review.created_by_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_reviews.append(review)
+
+        self.db_reviews = AnnotationReview.objects.bulk_create(
+            unique_reviews, batch_size=settings.BATCH_SIZE, ignore_conflicts=True
+        )
+
+        # reflect review results on annotations for accepted_state serialization
+        for review in unique_reviews:
+            Annotation.objects.filter(id=review.annotation_id).update(
+                last_action=review.result, updated_by_id=review.created_by_id
+            )
+
+        logging.info(f'Reviews serialization success, len = {len(self.db_reviews)}')
+        return self.db_reviews
 
     def add_drafts(self, task_drafts, db_tasks, annotation_mapping, project):
         """Save task drafts to DB"""
@@ -933,6 +1086,8 @@ class TaskWithAnnotationsAndPredictionsAndDraftsSerializer(TaskSerializer):
 
 class NextTaskSerializer(TaskWithAnnotationsAndPredictionsAndDraftsSerializer):
     unique_lock_id = serializers.SerializerMethodField()
+    # annotation auto-selected when the task opens (rejected rework / review queue)
+    default_selected_annotation = serializers.SerializerMethodField()
 
     def get_unique_lock_id(self, task):
         user = self.context['request'].user
@@ -940,17 +1095,52 @@ class NextTaskSerializer(TaskWithAnnotationsAndPredictionsAndDraftsSerializer):
         if lock:
             return lock.unique_id
 
+    def get_default_selected_annotation(self, task):
+        """Annotation to open first: the current user's rejected work, or an
+        annotation awaiting this reviewer's review for non-annotator roles."""
+        user = self._get_user()
+        if not user or not getattr(user, 'is_authenticated', False):
+            return None
+
+        annotations = task.annotations.filter(was_cancelled=False, completed_by__isnull=False)
+
+        if getattr(user, 'is_annotator', False):
+            # rework: the annotator's own annotation with a still-active rejection
+            # (a rejection is active while the review is newer than the annotation)
+            rejected = (
+                annotations.filter(
+                    completed_by=user,
+                    reviews__result=ReviewResult.REJECTED,
+                    reviews__updated_at__gt=F('updated_at'),
+                )
+                .order_by('pk')
+                .first()
+            )
+            if rejected:
+                return rejected.pk
+            # annotators explicitly assigned as reviewers also review foreign annotations
+            if not task.assignments.filter(user=user, role='RE').exists():
+                return None
+        # reviewer/management: first foreign annotation without a review from this user
+        pending = (
+            annotations.exclude(completed_by=user)
+            .exclude(reviews__created_by=user)
+            .order_by('pk')
+            .first()
+        )
+        return pending.pk if pending else None
+
     def get_predictions(self, task):
         predictions = task.get_predictions_for_prelabeling()
         return PredictionSerializer(predictions, many=True, read_only=True, default=[], context=self.context).data
 
     def get_annotations(self, task):
         result = []
+        user = self.context['request'].user
         if self.context.get('annotations', False):
             # Support lazy loading of annotations (FIT-720)
             # When annotations_stub is True, return lightweight stubs without result field
             use_stub = self.context.get('annotations_stub', False)
-            user = self.context['request'].user
 
             if use_stub:
                 # Get annotations queryset and filter by user
@@ -965,7 +1155,31 @@ class NextTaskSerializer(TaskWithAnnotationsAndPredictionsAndDraftsSerializer):
                 for annotation in annotations:
                     if annotation.get('completed_by') == user.id:
                         result.append(annotation)
-        return result
+            return result
+
+        # Review workflow: the next-task payload normally ships without
+        # annotation bodies, but the rework/review target referenced by
+        # `default_selected_annotation` must be included or nothing can open.
+        annotations = task.annotations.filter(was_cancelled=False, completed_by__isnull=False)
+        if getattr(user, 'is_annotator', False):
+            # annotator rework: their own annotations with an active rejection
+            pending = annotations.filter(
+                completed_by=user,
+                reviews__result=ReviewResult.REJECTED,
+                reviews__updated_at__gt=F('updated_at'),
+            )
+            # annotators assigned as reviewers on this task also see foreign
+            # annotations awaiting their review
+            if task.assignments.filter(user=user, role='RE').exists():
+                pending = (
+                    pending | annotations.exclude(completed_by=user).exclude(reviews__created_by=user)
+                )
+        else:
+            # reviewers/managers: foreign annotations still awaiting their review
+            pending = annotations.exclude(completed_by=user).exclude(reviews__created_by=user)
+        return AnnotationSerializer(
+            pending.order_by('pk'), many=True, read_only=True, default=[], context=self.context
+        ).data
 
 
 class TaskIDWithAnnotationsAndPredictionsSerializer(ModelSerializer):

@@ -56,6 +56,13 @@ class TestTaskAPI(APITestCase):
             'last_comment_updated_at': None,
             'unresolved_comment_count': 0,
             'assignments': [],
+            # review columns are evaluated because get_queryset() uses all_fields=True
+            'reviewed': False,
+            'reviewed_at': None,
+            'reviewers': [],
+            'reviewers_count': 0,
+            'reviews_accepted': 0,
+            'reviews_rejected': 0,
         }
 
     def test_patch_task(self):

@@ -1,3 +1,7 @@
+from django.db.models import Q
+from tasks.choices import ReviewResult
+
+
 def _is_project_annotator(user, project) -> bool:
     """Safely check whether the user is a project annotator.
 
@@ -11,6 +15,25 @@ def _is_project_annotator(user, project) -> bool:
         return bool(checker(project))
     except Exception:
         return False
+
+
+def can_review(user, task=None) -> bool:
+    """Check whether the user is allowed to write annotation reviews.
+
+    Reviewers (org role 'RE') and management roles (owners, admins, managers)
+    may review. Annotators (org role 'AN') may only review tasks where they hold
+    an explicit reviewer TaskAssignment. Anonymous/inactive users can never review.
+    """
+    if not getattr(user, 'is_authenticated', False) or not getattr(user, 'is_active', True):
+        return False
+
+    if getattr(user, 'is_annotator', False):
+        # annotators can still be assigned as reviewers on specific tasks
+        if task is None:
+            return False
+        return task.assignments.filter(user=user, role='RE').exists()
+
+    return True
 
 
 class TaskMixin:
@@ -47,6 +70,20 @@ class TaskMixin:
         Actions to execute after bulk task deletion
         """
         pass
+
+    def get_rejected_query(self):
+        """Annotations currently marked rejected by a reviewer.
+
+        Used by Task.get_lock_exclude_query: rejected annotations are excluded
+        from the lock count so that rejected tasks can re-enter the queue.
+
+        A rejection is "active" only while the review is newer than the
+        annotation itself: once the annotator reworks the annotation, it starts
+        counting toward the lock again until the reviewer re-reviews it.
+        """
+        from django.db.models import F
+
+        return Q(reviews__result=ReviewResult.REJECTED) & Q(reviews__updated_at__gt=F('updated_at'))
 
     def can_be_skipped(self) -> bool:
         return True

@@ -32,7 +32,7 @@ const controlsInjector = inject(({ store }) => {
 
 export const Controls = controlsInjector(
   observer(({ store, history, annotation }) => {
-    const isReview = store.hasInterface("review");
+    const isReview = store.hasInterface("review") || annotation.canBeReviewed;
 
     const historySelected = isDefined(store.annotationStore.selectedHistory);
     const { userGenerate, sentUserGenerate, versions, results, editable } = annotation;

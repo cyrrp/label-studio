@@ -37,9 +37,19 @@ class TaskStateChoices(models.TextChoices):
 
 @register_state_choices('annotation')
 class AnnotationStateChoices(models.TextChoices):
-    """Annotations don't carry state in LSO, but this can still be used for tracking history."""
+    """Annotation lifecycle states.
+
+    CREATED is the initial/submitted state; ACCEPTED / REJECTED /
+    FIXED_AND_ACCEPTED are reached through the review workflow
+    (see tasks.api.AnnotationReviewListAPI and fsm/review_transitions.py).
+    """
 
     CREATED = 'CREATED', _('Created')
+
+    # Review outcomes
+    ACCEPTED = 'ACCEPTED', _('Accepted')
+    REJECTED = 'REJECTED', _('Rejected')
+    FIXED_AND_ACCEPTED = 'FIXED_AND_ACCEPTED', _('Fixed and accepted')
 
 
 @register_state_choices('project')

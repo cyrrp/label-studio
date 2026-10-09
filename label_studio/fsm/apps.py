@@ -50,6 +50,7 @@ class FsmConfig(AppConfig):
             from . import (
                 annotation_transitions,  # noqa: F401
                 project_transitions,  # noqa: F401
+                review_transitions,  # noqa: F401
                 task_transitions,  # noqa: F401
             )
 

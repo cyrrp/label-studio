@@ -41,7 +41,7 @@ from fsm.models import FsmHistoryStateModel
 from fsm.queryset_mixins import FSMStateQuerySetMixin
 from label_studio_sdk.label_interface.objects import PredictionValue
 from rest_framework.exceptions import ValidationError
-from tasks.choices import ActionType
+from tasks.choices import ActionType, ReviewResult
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +272,12 @@ class Task(TaskMixin, FsmHistoryStateModel):
                 q = Q(was_cancelled=True) & ~Q(completed_by=user)
             else:
                 raise ValidationError(f'Invalid SkipQueue value: {self.project.skip_queue}')
+
+        # annotations rejected by a reviewer never hold the task lock (in any
+        # skip-queue mode), so the task can re-enter the labeling queue for rework
+        rejected_q = self.get_rejected_query()
+        if rejected_q:
+            q |= rejected_q
 
         return q | Q(ground_truth=True)
 
@@ -892,6 +898,68 @@ class Annotation(AnnotationMixin, FsmHistoryStateModel):
         logger.debug('Remove annotation counters in project summary followed by deleting an annotation')
         self.decrease_project_summary_counters()
 
+
+class AnnotationReview(models.Model):
+    """Review record for an annotation created by a reviewer.
+
+    There is at most one active review per (annotation, reviewer) pair;
+    posting a second review for the same annotation updates the existing row
+    (see tasks.api annotation-review endpoints).
+
+    NOTE: `reviews` related_name on `annotation` is a hard contract:
+    data_export.mixins and io_storages reach it via `annotations.reviews`.
+    """
+
+    id = models.AutoField(
+        auto_created=True,
+        primary_key=True,
+        serialize=False,
+        verbose_name='ID',
+    )
+    annotation = models.ForeignKey(
+        'tasks.Annotation',
+        on_delete=models.CASCADE,
+        related_name='reviews',
+        help_text='Annotation being reviewed',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='annotation_reviews',
+        help_text='Reviewer who created this review',
+    )
+    result = models.CharField(
+        _('result'),
+        max_length=64,
+        choices=ReviewResult.choices,
+        help_text='Review result: accepted, rejected or fixed_and_accepted',
+    )
+    comment = models.TextField(
+        _('comment'),
+        null=True,
+        blank=True,
+        default=None,
+        help_text='Review comment, e.g. a reject reason',
+    )
+    created_at = models.DateTimeField(_('created at'), auto_now_add=True, help_text='Creation time')
+    updated_at = models.DateTimeField(_('updated at'), auto_now=True, help_text='Last updated time')
+
+    def has_permission(self, user: 'User') -> bool:  # noqa: F821
+        """Reviews inherit access rules from their annotation."""
+        return self.annotation.has_permission(user)
+
+    def __str__(self):
+        return f'AnnotationReview {self.id} ({self.result}) by {self.created_by_id} on annotation {self.annotation_id}'
+
+    class Meta:
+        db_table = 'annotation_review'
+        unique_together = [['annotation', 'created_by']]
+        indexes = [
+            models.Index(fields=['created_by']),
+            models.Index(fields=['result']),
+            models.Index(fields=['created_at']),
+        ]
 
 
 class TaskLockQuerySet(models.QuerySet):

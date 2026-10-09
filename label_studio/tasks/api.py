@@ -24,7 +24,9 @@ from rest_framework import generics, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
-from tasks.models import Annotation, AnnotationDraft, Prediction, Task
+from tasks.choices import ActionType, ReviewResult
+from tasks.mixins import can_review
+from tasks.models import Annotation, AnnotationDraft, AnnotationReview, Prediction, Task
 from tasks.openapi_schema import (
     annotation_request_schema,
     annotation_response_example,
@@ -36,6 +38,7 @@ from tasks.openapi_schema import (
 )
 from tasks.serializers import (
     AnnotationDraftSerializer,
+    AnnotationReviewSerializer,
     AnnotationSerializer,
     PredictionSerializer,
     TaskSerializer,
@@ -289,7 +292,7 @@ class TaskAPI(generics.RetrieveUpdateDestroyAPIView):
         self.task = self.get_object()
 
     def prefetch(self, queryset):
-        return queryset.prefetch_related(
+        prefetch_fields = [
             'annotations',
             'predictions',
             'annotations__completed_by',
@@ -301,7 +304,11 @@ class TaskAPI(generics.RetrieveUpdateDestroyAPIView):
             'io_storages_s3importstoragelink',
             'file_upload',
             'project__ml_backends',
-        )
+        ]
+        # review mode needs nested review records on annotations
+        if bool_from_request(self.request.GET, 'review', False):
+            prefetch_fields += ['annotations__reviews', 'annotations__reviews__created_by']
+        return queryset.prefetch_related(*prefetch_fields)
 
     def get_retrieve_serializer_context(self, request):
         """Build serializer context for task retrieval.
@@ -344,6 +351,9 @@ class TaskAPI(generics.RetrieveUpdateDestroyAPIView):
         # The expand mechanism would override get_annotations and use AnnotationSerializer
         # instead of AnnotationStubSerializer
         expand = [] if context.get('annotations_stub') else ['annotations.completed_by']
+        # review mode: nest full review records (reviewer + result + comment)
+        if bool_from_request(request.GET, 'review', False):
+            expand += ['annotations.reviews']
         serializer = self.get_serializer_class()(self.task, many=False, context=context, expand=expand)
         data = serializer.data
         return Response(data)
@@ -680,6 +690,221 @@ class AnnotationAPI(generics.RetrieveUpdateDestroyAPIView):
     @api_webhook_for_delete(WebhookAction.ANNOTATIONS_DELETED)
     def delete(self, request, *args, **kwargs):
         return super(AnnotationAPI, self).delete(request, *args, **kwargs)
+
+
+REVIEW_TRANSITION_BY_RESULT = {
+    ReviewResult.ACCEPTED: 'annotation_accepted',
+    ReviewResult.REJECTED: 'annotation_rejected',
+    ReviewResult.FIXED_AND_ACCEPTED: 'annotation_fixed_and_accepted',
+}
+
+
+def _fire_review_transition(annotation, transition_name, user, context_data=None):
+    """Execute an FSM review transition on the annotation, degrading gracefully.
+
+    Reviews must work even when the FSM feature is off or misconfigured, so any
+    transition failure is logged and swallowed (the last_action field remains
+    the source of truth for `accepted_state`).
+    """
+    try:
+        from fsm.utils import is_fsm_enabled
+
+        if not is_fsm_enabled(user):
+            return
+        from fsm.state_manager import StateManager
+
+        StateManager.execute_transition(
+            entity=annotation,
+            transition_name=transition_name,
+            user=user,
+            context_data=context_data or {},
+        )
+    except Exception as exc:  # noqa: BLE001 - FSM must never break the review flow
+        logger.warning('Review transition %s failed for annotation %s: %s', transition_name, annotation.id, exc)
+
+
+def _apply_review_result_to_annotation(annotation, review_result, user, annotation_result=None):
+    """Persist the review outcome onto the annotation.
+
+    Sets `last_action` (consumed as `accepted_state` by the editor) and, when a
+    new `annotation_result` is supplied (fix-and-accept), atomically replaces the
+    annotation's labeling result.
+    """
+    if annotation_result is not None:
+        if not isinstance(annotation_result, list):
+            raise ValidationError({'annotation_result': 'Annotation result must be a list'})
+        annotation.result = annotation_result
+    annotation.last_action = review_result
+    annotation.updated_by = user
+    annotation.save()
+
+
+class AnnotationReviewListAPI(generics.ListCreateAPIView):
+    """List and create reviews for a single annotation.
+
+    GET  /api/annotations/<id>/reviews/ - list of review records
+    POST /api/annotations/<id>/reviews/ - create (upsert per reviewer) a review
+
+    POST body:
+      {
+        "result": "accepted" | "rejected" | "fixed_and_accepted",
+        "comment": "optional review comment",
+        "annotation_result": [...]   // optional - replaces annotation result (fix-and-accept)
+      }
+
+    EE-compatible aliases are also accepted: `"accepted": true|false` and
+    `result: "fixed"`.
+    """
+
+    parser_classes = (JSONParser, FormParser, MultiPartParser)
+    permission_required = ViewClassPermission(
+        GET=all_permissions.annotations_view,
+        POST=all_permissions.annotations_change,
+    )
+    serializer_class = AnnotationReviewSerializer
+
+    def initial(self, request, *args, **kwargs):
+        super().initial(request, *args, **kwargs)
+        self.annotation = self.get_annotation()
+
+    def get_annotation(self):
+        annotation = generics.get_object_or_404(
+            Annotation.objects.select_related('task', 'task__project', 'completed_by'),
+            pk=self.kwargs['pk'],
+        )
+        # object-level permission: task scoping for assigned annotators lives in
+        # AnnotationMixin.has_permission / TaskMixin.has_permission
+        self.check_object_permissions(self.request, annotation)
+        return annotation
+
+    def get_queryset(self):
+        return self.annotation.reviews.select_related('created_by').order_by('pk')
+
+    def check_can_review(self, annotation):
+        user = self.request.user
+        if not can_review(user, annotation.task):
+            raise PermissionDenied('You do not have permission to review annotations in this project')
+        if annotation.completed_by_id == user.id:
+            raise ValidationError({'detail': 'You cannot review your own annotation'})
+
+    @transaction.atomic
+    def post(self, request, *args, **kwargs):
+        annotation = self.annotation
+        self.check_can_review(annotation)
+
+        serializer = self.get_serializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        result_value = data.get('result')
+        if result_value not in ReviewResult.values:
+            raise ValidationError({'result': 'Expected one of: accepted, rejected, fixed_and_accepted'})
+
+        annotation_result = request.data.get('annotation_result', None)
+        if annotation_result is not None:
+            # any result override is by definition a fix-and-accept
+            result_value = ReviewResult.FIXED_AND_ACCEPTED
+
+        _apply_review_result_to_annotation(annotation, result_value, request.user, annotation_result)
+
+        review, created = AnnotationReview.objects.update_or_create(
+            annotation=annotation,
+            created_by=request.user,
+            defaults={'result': result_value, 'comment': data.get('comment')},
+        )
+
+        _fire_review_transition(
+            annotation,
+            REVIEW_TRANSITION_BY_RESULT[result_value],
+            request.user,
+            context_data={'review_id': review.id, 'result': result_value},
+        )
+
+        return Response(self.get_serializer(review).data, status=201 if created else 200)
+
+
+class AnnotationReviewAPI(generics.RetrieveUpdateDestroyAPIView):
+    """Retrieve, update or delete a single review record.
+
+    GET    /api/annotation-reviews/<id>/
+    PATCH  /api/annotation-reviews/<id>/  - {result?, comment?, annotation_result?}
+    DELETE /api/annotation-reviews/<id>/  - removes the review and resets the
+                                          annotation's review state
+    """
+
+    parser_classes = (JSONParser, FormParser, MultiPartParser)
+    permission_required = ViewClassPermission(
+        GET=all_permissions.annotations_view,
+        PATCH=all_permissions.annotations_change,
+        DELETE=all_permissions.annotations_change,
+    )
+    serializer_class = AnnotationReviewSerializer
+    queryset = AnnotationReview.objects.select_related(
+        'annotation', 'annotation__task', 'annotation__task__project', 'created_by'
+    )
+
+    def _can_modify(self, review, user):
+        """Authors may modify their own reviews; management roles may modify any."""
+        if review.created_by_id == user.id:
+            return True
+        if not can_review(user, review.annotation.task):
+            return False
+        # org reviewers may only touch their own reviews
+        if getattr(user, 'is_reviewer', False) or getattr(user, 'is_annotator', False):
+            return False
+        return True
+
+    def get_object(self):
+        review = super().get_object()
+        if self.request.method != 'GET' and not self._can_modify(review, self.request.user):
+            raise PermissionDenied('Only the review author or a manager may modify this review')
+        return review
+
+    @transaction.atomic
+    def update(self, request, *args, **kwargs):
+        review = self.get_object()
+        annotation = review.annotation
+
+        serializer = self.get_serializer(review, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        annotation_result = request.data.get('annotation_result', None)
+        result_value = data.get('result')
+        if annotation_result is not None:
+            result_value = ReviewResult.FIXED_AND_ACCEPTED
+        if result_value is None:
+            result_value = review.result
+
+        if 'comment' in data:
+            review.comment = data['comment']
+        review.result = result_value
+        review.save(update_fields=['result', 'comment', 'updated_at'])
+
+        _apply_review_result_to_annotation(annotation, result_value, request.user, annotation_result)
+        _fire_review_transition(
+            annotation,
+            REVIEW_TRANSITION_BY_RESULT.get(result_value, 'annotation_accepted'),
+            request.user,
+            context_data={'review_id': review.id, 'result': result_value},
+        )
+        return Response(self.get_serializer(review).data)
+
+    @transaction.atomic
+    def destroy(self, request, *args, **kwargs):
+        review = self.get_object()
+        annotation = review.annotation
+        review.delete()
+
+        # unreview: the annotation returns to "not reviewed" via last_action
+        _apply_review_result_to_annotation(annotation, ActionType.DELETED_REVIEW, request.user)
+        _fire_review_transition(
+            annotation,
+            'annotation_review_deleted',
+            request.user,
+            context_data={'deleted_review_id': review.id},
+        )
+        return Response(status=204)
 
 
 @method_decorator(

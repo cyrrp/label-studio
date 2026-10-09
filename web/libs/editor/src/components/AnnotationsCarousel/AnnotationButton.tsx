@@ -890,9 +890,19 @@ export const AnnotationButton = observer(
     // The backend builds the annotators array by iterating through annotations in order,
     // so we match by finding the annotation's position in the backend's annotation list
     const getReviewStatus = useCallback(() => {
+      if (!entityIsAlive || isPrediction) {
+        return null;
+      }
+
+      // Community edition: the annotation itself carries `accepted_state`
+      // (deserialized into `acceptedState` on the entity)
+      if (entity.acceptedState) {
+        return entity.acceptedState;
+      }
+
       // Only available in LSE for non-predictions
       const isLSE = (window as any).APP_SETTINGS?.version?.edition === "Enterprise";
-      if (!isLSE || !entityIsAlive || isPrediction) {
+      if (!isLSE) {
         return null;
       }
 

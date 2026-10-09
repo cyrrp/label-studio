@@ -156,6 +156,9 @@ const _Annotation = types
     ground_truth: types.optional(types.boolean, false),
     skipped: false,
 
+    // review outcome of this annotation: "accepted" | "rejected" | "fixed_and_accepted" | null
+    acceptedState: types.maybeNull(types.enumeration(["accepted", "rejected", "fixed_and_accepted"])),
+
     // This field stores all data that affects undo/redo history
     // It should contain real objects to be able to work with them through snapshots
     // Annotation will use getters to get them at the top level
@@ -395,16 +398,28 @@ const _Annotation = types
     // experiment to display review buttons in Quick View
     get canBeReviewed() {
       const store = self.store;
+      const reviewerFlow = isFF(FF_REVIEWER_FLOW);
+      const currentUserId = store.user?.id;
+      // community edition: reviewers and management roles by org role, or users
+      // explicitly assigned as reviewers on this task, may review
+      const canReviewByRole = ["OW", "AD", "MA", "RE"].includes(window.APP_SETTINGS?.user?.role);
+      const assignedAsReviewer = Boolean(
+        store.task?.reviewers?.some?.((r) => (r?.id ?? r) === currentUserId),
+      );
 
       return (
-        isFF(FF_REVIEWER_FLOW) &&
+        (reviewerFlow || canReviewByRole || assignedAsReviewer) &&
         // not a current user — we can only review others' annotations
-        self.user?.email &&
-        store.user?.email !== self.user?.email &&
-        // we have this only in LSE
+        // (CE user lists may lack emails; fall back to id comparison)
+        self.user &&
+        (self.user?.email && store.user?.email
+          ? self.user.email !== store.user.email
+          : self.user?.id !== currentUserId) &&
+        // review only where an accept handler is wired (LSE / DM integration)
         getEnv(self).events.hasEvent("acceptAnnotation") &&
-        // Quick View — we don't have View All in Label Stream
-        store.hasInterface("annotations:view-all") &&
+        // EE: Quick View only — we don't have View All in Label Stream.
+        // CE: the role/assignment check gates both modes.
+        (reviewerFlow ? store.hasInterface("annotations:view-all") : true) &&
         // skipped annotations can't be reviewed
         !self.skipped &&
         // annotation was submitted already
@@ -437,6 +452,10 @@ const _Annotation = types
 
     setCommentCount(val) {
       self.comment_count = val;
+    },
+
+    setAcceptedState(value) {
+      self.acceptedState = value ?? null;
     },
 
     setGroundTruth(value, ivokeEvent = true) {

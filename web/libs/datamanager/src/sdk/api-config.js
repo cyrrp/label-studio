@@ -177,5 +177,26 @@ export const APIConfig = {
       path: "/../comments/:id",
       method: "delete",
     },
+
+    /** List reviews of an annotation (community review workflow) */
+    annotationReviews: "/../annotations/:annotationID/reviews/",
+
+    /** Create (upsert) a review for an annotation */
+    createAnnotationReview: {
+      path: "/../annotations/:annotationID/reviews/",
+      method: "post",
+    },
+
+    /** Update a review record */
+    updateAnnotationReview: {
+      path: "/../annotation-reviews/:reviewID/",
+      method: "patch",
+    },
+
+    /** Delete a review record */
+    deleteAnnotationReview: {
+      path: "/../annotation-reviews/:reviewID/",
+      method: "delete",
+    },
   },
 };

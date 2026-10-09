@@ -357,6 +357,143 @@ def get_next_task_without_dm_queue(
     return next_task, use_task_lock, queue_info
 
 
+def rejected_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
+    """Serve tasks back to annotators whose annotations were rejected by a reviewer.
+
+    Mirrors skipped_queue/postponed_queue: a rejected annotation keeps counting
+    the task as "solved" for the user, so the regular pipeline would never
+    re-serve it; this queue returns it for rework instead.
+    """
+    if not next_task:
+        from tasks.choices import ReviewResult
+
+        # only rejections newer than the annotation itself count as pending rework
+        q = (
+            Q(project=project, task__isnull=False, was_cancelled=False, reviews__result=ReviewResult.REJECTED)
+            & Q(reviews__updated_at__gt=F('updated_at'))
+        )
+        rejected_tasks = user.annotations.filter(q).order_by('updated_at').values_list('task__pk', flat=True)
+        if rejected_tasks.exists():
+            preserved_order = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(rejected_tasks)])
+            rejected_tasks = prepared_tasks.filter(pk__in=rejected_tasks).order_by(preserved_order)
+
+            if assigned_flag:
+                next_task = fast_first(rejected_tasks)
+            else:
+                next_task = _get_first_unlocked(rejected_tasks, user)
+            if next_task is not None:
+                queue_info = 'Rejected queue'
+
+    return next_task, queue_info
+
+
+def review_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
+    """Serve tasks with foreign annotations awaiting review to reviewer-capable users.
+
+    Reviewing does not consume the task's overlap, so lock checks don't apply —
+    candidates are served in deterministic order like the manual-assignment
+    queue. Annotators only reach this queue when they hold an explicit reviewer
+    assignment on the task.
+    """
+    if next_task:
+        return next_task, queue_info
+
+    # foreign annotations on the task that this user hasn't reviewed yet
+    pending_annotations = (
+        Annotation.objects.filter(task=OuterRef('pk'), was_cancelled=False, completed_by__isnull=False)
+        .exclude(completed_by=user)
+        .exclude(reviews__created_by=user)
+    )
+    candidates = prepared_tasks.filter(Exists(pending_annotations)).order_by('pk')
+
+    if getattr(user, 'is_annotator', False):
+        # annotators may only review tasks where they hold a reviewer assignment
+        assigned_reviewer = TaskAssignment.objects.filter(
+            task=OuterRef('pk'), user=user, role=TaskAssignment.Role.REVIEWER
+        )
+        candidates = candidates.filter(Exists(assigned_reviewer))
+
+    next_task = fast_first(candidates)
+    if next_task is not None:
+        queue_info = 'Review queue'
+
+    return next_task, queue_info
+
+
+def skipped_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
+    if not next_task and project.skip_queue == project.SkipQueue.REQUEUE_FOR_ME:
+        q = Q(project=project, task__isnull=False, was_cancelled=True, task__is_labeled=False)
+        skipped_tasks = user.annotations.filter(q).order_by('updated_at').values_list('task__pk', flat=True)
+        if skipped_tasks.exists():
+            preserved_order = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(skipped_tasks)])
+            skipped_tasks = prepared_tasks.filter(pk__in=skipped_tasks).order_by(preserved_order)
+
+            # for assigned annotators locks don't make sense, moreover,
+            # _get_first_unlocked breaks label stream for manual mode because
+            # it evaluates locks based on auto-mode logic and returns None
+            # when there are no more tasks to label in auto-mode
+            if assigned_flag:
+                next_task = fast_first(skipped_tasks)
+            else:
+                next_task = _get_first_unlocked(skipped_tasks, user)
+            queue_info = 'Skipped queue'
+
+    return next_task, queue_info
+
+
+def postponed_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
+    if not next_task:
+        q = Q(task__project=project, task__isnull=False, was_postponed=True, task__is_labeled=False)
+        postponed_tasks = user.drafts.filter(q).order_by('updated_at').values_list('task__pk', flat=True)
+        if postponed_tasks.exists():
+            preserved_order = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(postponed_tasks)])
+            postponed_tasks = prepared_tasks.filter(pk__in=postponed_tasks).order_by(preserved_order)
+
+            # for assigned annotators locks don't make sense, moreover,
+            # _get_first_unlocked breaks label stream for manual mode because
+            # it evaluates locks based on auto-mode logic and returns None
+            # when there are no more tasks to label in auto-mode
+            if assigned_flag:
+                next_task = fast_first(postponed_tasks)
+            else:
+                next_task = _get_first_unlocked(postponed_tasks, user)
+            if next_task is not None:
+                next_task.allow_postpone = False
+            queue_info = 'Postponed draft queue'
+
+    return next_task, queue_info
+
+
+def get_task_from_qs_with_sampling(
+    not_solved_tasks: QuerySet[Task],
+    user_solved_tasks_array: List[int],
+    prepared_tasks: QuerySet,
+    user: User,
+    project: Project,
+    queue_info: str,
+) -> Tuple[Union[Task, None], str]:
+    next_task = None
+    if project.sampling == project.SEQUENCE:
+        logger.debug(f'User={user} tries sequence sampling from prepared tasks')
+        next_task = _get_first_unlocked(not_solved_tasks, user)
+        if next_task:
+            queue_info += (' & ' if queue_info else '') + 'Sequence queue'
+
+    elif project.sampling == project.UNCERTAINTY:
+        logger.debug(f'User={user} tries uncertainty sampling from prepared tasks')
+        next_task = _try_uncertainty_sampling(not_solved_tasks, project, user_solved_tasks_array, user, prepared_tasks)
+        if next_task:
+            queue_info += (' & ' if queue_info else '') + 'Active learning or random queue'
+
+    elif project.sampling == project.UNIFORM:
+        logger.debug(f'User={user} tries random sampling from prepared tasks')
+        next_task = _get_random_unlocked(not_solved_tasks, user)
+        if next_task:
+            queue_info += (' & ' if queue_info else '') + 'Uniform random queue'
+
+    return next_task, queue_info
+
+
 def scope_tasks_to_assignments(
     user: User, project: Project, prepared_tasks: QuerySet[Task]
 ) -> Tuple[QuerySet[Task], bool]:
@@ -422,7 +559,13 @@ def get_next_task(
 
         next_task, queue_info = postponed_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info)
 
+        # reviewer-rejected work goes back to its annotator before skipped tasks
+        next_task, queue_info = rejected_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info)
+
         next_task, queue_info = skipped_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info)
+
+        # annotations awaiting review are served to reviewer-capable users last
+        next_task, queue_info = review_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info)
 
         if next_task and use_task_lock:
             # set lock for the task with TTL 3x time more then current average lead time (or 1 hour by default)
