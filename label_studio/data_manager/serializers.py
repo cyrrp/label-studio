@@ -462,6 +462,8 @@ class DataManagerTaskSerializer(TaskSerializer):
     draft_exists = serializers.BooleanField(required=False)
     updated_by = UpdatedByDMFieldSerializer(required=False, read_only=True)
     assignments = serializers.SerializerMethodField(required=False, read_only=True)
+    assigned_annotators = AnnotatorsDMFieldSerializer(required=False, read_only=True)
+    assigned_reviewers = AnnotatorsDMFieldSerializer(required=False, read_only=True)
     state = FSMStateField(read_only=True)  # FSM state - automatically uses annotation if present
 
     CHAR_LIMITS = 500
@@ -604,6 +606,22 @@ class DataManagerTaskSerializer(TaskSerializer):
         annotators = list(set(annotators))
         annotators = [a for a in annotators if a is not None]
         return annotators if hasattr(obj, 'annotators') and annotators else []
+
+    def get_assigned_annotators(self, obj):
+        return self._user_id_list(obj, 'assigned_annotators')
+
+    def get_assigned_reviewers(self, obj):
+        return self._user_id_list(obj, 'assigned_reviewers')
+
+    @staticmethod
+    def _user_id_list(obj, attr):
+        """Parse a comma-joined user id annotation ('1,2,3') into a list of ints."""
+        value = getattr(obj, attr, None)
+        if not value:
+            return []
+        if isinstance(value, str):
+            value = [int(v) for v in value.split(',') if v.strip()]
+        return list({v for v in value if v is not None})
 
     def get_annotations_ids(self, task):
         return self._pretty_results(task, 'annotations_ids', unique=True)

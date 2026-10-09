@@ -384,6 +384,40 @@ def annotate_reviewed_at(queryset):
     return queryset.annotate(reviewed_at=Max('annotations__reviews__updated_at'))
 
 
+def _assigned_users_for_role(queryset, role, annotation_name):
+    """Comma-joined user ids holding a TaskAssignment of the given role on the task."""
+    from django.db.models import Case, F, When
+    from django.db.models.fields import CharField
+
+    return queryset.annotate(
+        **{
+            annotation_name: _reviewers_string_agg(
+                Case(When(assignments__role=role, then=F('assignments__user')), output_field=CharField())
+            )
+        }
+    )
+
+
+def annotate_assigned_annotators(queryset):
+    """`assigned_annotators` column: users with an ANNOTATOR assignment on the task."""
+    from tasks.models import TaskAssignment
+
+    return _assigned_users_for_role(queryset, TaskAssignment.Role.ANNOTATOR, 'assigned_annotators')
+
+
+def annotate_assigned_reviewers(queryset):
+    """`assigned_reviewers` column: users with a REVIEWER assignment on the task."""
+    from tasks.models import TaskAssignment
+
+    return _assigned_users_for_role(queryset, TaskAssignment.Role.REVIEWER, 'assigned_reviewers')
+
+
+ASSIGNMENT_ANNOTATIONS_MAP = {
+    'assigned_annotators': annotate_assigned_annotators,
+    'assigned_reviewers': annotate_assigned_reviewers,
+}
+
+
 REVIEW_ANNOTATIONS_MAP = {
     'reviewed': annotate_reviewed,
     'reviewers': annotate_reviewers,
@@ -394,7 +428,7 @@ REVIEW_ANNOTATIONS_MAP = {
 
 
 def register_review_annotation_map():
-    """Register review columns into settings.DATA_MANAGER_ANNOTATIONS_MAP.
+    """Register review and assignment columns into settings.DATA_MANAGER_ANNOTATIONS_MAP.
 
     Called from TasksConfig.ready(); kept out of data_manager/* on purpose
     (community edition can't edit that app).
@@ -402,10 +436,17 @@ def register_review_annotation_map():
     from data_manager.managers import update_annotation_map
 
     update_annotation_map(REVIEW_ANNOTATIONS_MAP)
+    update_annotation_map(ASSIGNMENT_ANNOTATIONS_MAP)
+
+
+ASSIGNMENT_FILTER_ROLES = {
+    'assigned_annotators': 'AN',
+    'assigned_reviewers': 'RE',
+}
 
 
 def review_custom_filter_expressions(_filter, field_name, project, request=None, is_child_filter=False):
-    """Data Manager custom filter hook for review columns.
+    """Data Manager custom filter hook for review and assignment columns.
 
     data_manager.managers.apply_filters() resolves
     settings.DATA_MANAGER_CUSTOM_FILTER_EXPRESSIONS via load_func() on every
@@ -413,13 +454,30 @@ def review_custom_filter_expressions(_filter, field_name, project, request=None,
     (a no-op stub in community) with this function, so it must delegate to the
     default behavior by returning None for fields it doesn't handle.
     """
-    if field_name != 'reviewers':
-        return None
-
     from django.db.models import Exists, OuterRef, Q
     from tasks.models import AnnotationReview, TaskAssignment
 
     operator = getattr(_filter, 'operator', '')
+
+    if field_name in ASSIGNMENT_FILTER_ROLES:
+        role = TaskAssignment.Role(ASSIGNMENT_FILTER_ROLES[field_name])
+        if operator in ('contains', 'not_contains'):
+            user_id = int(_filter.value)
+            q = Q(
+                Exists(TaskAssignment.objects.filter(task=OuterRef('pk'), user_id=user_id, role=role))
+            )
+            return q if operator == 'contains' else ~q
+        if operator == 'empty':
+            from core.utils.params import cast_bool_from_str
+
+            value = cast_bool_from_str(_filter.value)
+            q = Q(Exists(TaskAssignment.objects.filter(task=OuterRef('pk'), role=role)))
+            return ~q if value else q
+        return None
+
+    if field_name != 'reviewers':
+        return None
+
     if operator in ('contains', 'not_contains'):
         user_id = int(_filter.value)
         reviewed = Exists(AnnotationReview.objects.filter(annotation__task=OuterRef('pk'), created_by_id=user_id))

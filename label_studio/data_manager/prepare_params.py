@@ -166,6 +166,18 @@ class Column(Enum):
         'Reviewers that reviewed the task, or assigned reviewers (Enterprise only). '
         'Important note: the filter `type` should be List, but the filter `value` is integer',
     )
+    ASSIGNED_ANNOTATORS = (
+        'assigned_annotators',
+        'List',
+        'Users assigned to label the task. '
+        'Important note: the filter `type` should be List, but the filter `value` is integer',
+    )
+    ASSIGNED_REVIEWERS = (
+        'assigned_reviewers',
+        'List',
+        'Users assigned to review the task. '
+        'Important note: the filter `type` should be List, but the filter `value` is integer',
+    )
     REVIEWS_REJECTED = (
         'reviews_rejected',
         'Number',

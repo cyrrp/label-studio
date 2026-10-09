@@ -45,11 +45,12 @@ class TasksConfig(AppConfig):
             dispatch_uid='tasks.agreement.on_annotations_bulk_created_update_agreement',
         )
 
-        # Community review workflow: register review columns (reviewed, reviewers,
-        # reviews_*, reviewed_at) into the Data Manager annotation map and provide
-        # exact-match filtering for the `reviewers` column through the
-        # custom_filter_expressions hook. Both hooks live in data_manager but are
-        # extension points designed for this, so no data_manager code is touched.
+        # Community review + assignment workflow: register review columns
+        # (reviewed, reviewers, reviews_*, reviewed_at) and assignment columns
+        # (assigned_annotators, assigned_reviewers) into the Data Manager
+        # annotation map, plus filtering through the custom_filter_expressions
+        # hook. Both hooks live in data_manager but are extension points
+        # designed for this, so no data_manager code is touched.
         from tasks.functions import register_review_annotation_map, review_custom_filter_expressions
 
         register_review_annotation_map()

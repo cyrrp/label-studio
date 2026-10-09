@@ -266,6 +266,91 @@ class TestAnnotatorsColumnAndFilter(TestCase):
         assert qs.count() == 0
 
 
+class TestAssignedColumns(TestCase):
+    """`assigned_annotators` / `assigned_reviewers` Data Manager columns."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.organization = OrganizationFactory()
+        cls.project = ProjectFactory(organization=cls.organization)
+        cls.owner = cls.organization.created_by
+        cls.annotator = UserFactory(active_organization=cls.organization)
+        cls.reviewer = UserFactory(active_organization=cls.organization)
+        cls.task1 = TaskFactory(project=cls.project)
+        cls.task2 = TaskFactory(project=cls.project)
+
+    def _apply(self, filters_dict):
+        from data_manager.managers import apply_filters
+
+        filters = Filters(conjunction='and', items=[filters_dict])
+        return apply_filters(Task.objects.filter(project=self.project), filters, self.project, make_request(self.owner))
+
+    def test_annotate_assigned_columns_per_role(self):
+        from tasks.functions import annotate_assigned_annotators, annotate_assigned_reviewers
+
+        TaskAssignment.assign_to(self.task1, self.annotator)
+        TaskAssignment.assign_to(self.task1, self.reviewer, role=TaskAssignment.Role.REVIEWER)
+        TaskAssignment.assign_to(self.task2, self.reviewer, role=TaskAssignment.Role.REVIEWER)
+
+        qs = annotate_assigned_annotators(Task.objects.filter(project=self.project))
+        by_id = {t.id: t.assigned_annotators for t in qs}
+        assert by_id[self.task1.id] == str(self.annotator.id)
+        assert by_id[self.task2.id] == ''
+
+        qs = annotate_assigned_reviewers(Task.objects.filter(project=self.project))
+        by_id = {t.id: t.assigned_reviewers for t in qs}
+        assert by_id[self.task1.id] == str(self.reviewer.id)
+        assert by_id[self.task2.id] == str(self.reviewer.id)
+
+    def test_serializer_parses_assigned_columns(self):
+        from data_manager.serializers import DataManagerTaskSerializer
+        from tasks.functions import annotate_assigned_annotators
+
+        TaskAssignment.assign_to(self.task1, self.annotator)
+        task = annotate_assigned_annotators(Task.objects.filter(pk=self.task1.pk)).first()
+        assert DataManagerTaskSerializer._user_id_list(task, 'assigned_annotators') == [self.annotator.id]
+        assert DataManagerTaskSerializer._user_id_list(task, 'assigned_reviewers') == []
+
+    def test_assigned_annotators_filter(self):
+        TaskAssignment.assign_to(self.task1, self.annotator)
+        TaskAssignment.assign_to(self.task2, self.reviewer, role=TaskAssignment.Role.REVIEWER)
+
+        qs = self._apply(
+            {
+                'filter': 'filter:tasks:assigned_annotators',
+                'operator': 'contains',
+                'type': 'List',
+                'value': str(self.annotator.id),
+            }
+        )
+        assert list(qs.values_list('id', flat=True)) == [self.task1.id]
+
+        qs = self._apply(
+            {
+                'filter': 'filter:tasks:assigned_reviewers',
+                'operator': 'contains',
+                'type': 'List',
+                'value': str(self.reviewer.id),
+            }
+        )
+        assert list(qs.values_list('id', flat=True)) == [self.task2.id]
+
+        qs = self._apply(
+            {'filter': 'filter:tasks:assigned_annotators', 'operator': 'empty', 'type': 'List', 'value': 'true'}
+        )
+        assert list(qs.values_list('id', flat=True)) == [self.task2.id]
+
+    def test_column_defs_and_filter_enum(self):
+        from data_manager.functions import get_all_columns
+        from data_manager.prepare_params import Column
+
+        column_ids = {c['id'] for c in get_all_columns(self.project)['columns']}
+        assert 'assigned_annotators' in column_ids
+        assert 'assigned_reviewers' in column_ids
+        assert 'filter:tasks:assigned_annotators' in Column.enums_for_filters()
+        assert 'filter:tasks:assigned_reviewers' in Column.enums_for_filters()
+
+
 class TestAssignedQueueSemantics(TestCase):
     """Assignment rows also unblock serving is_labeled tasks to assignees (assigned_flag)."""
 

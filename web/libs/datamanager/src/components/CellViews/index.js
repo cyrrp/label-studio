@@ -7,6 +7,8 @@ export {
   Annotators as Reviewers,
   Annotators as UpdatedBy,
   Annotators as CommentAuthors,
+  Annotators as AssignedAnnotators,
+  Annotators as AssignedReviewers,
 } from "./Annotators/Annotators";
 export { AudioCell as Audio, AudioPlusCell as AudioPlus } from "./AudioCell";
 export { BooleanCell as Boolean } from "./BooleanCell";
