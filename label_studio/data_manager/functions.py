@@ -160,6 +160,15 @@ def get_all_columns(project, *_):
             'project_defined': False,
         },
         {
+            'id': 'agreement',
+            'title': 'Agreement',
+            'type': 'Number',
+            'target': 'tasks',
+            'help': 'Average agreement score between annotators (percent, 0-100)',
+            'visibility_defaults': {'explore': False, 'labeling': False},
+            'project_defined': False,
+        },
+        {
             'id': 'annotations_results',
             'title': 'Annotation results',
             'type': 'String',

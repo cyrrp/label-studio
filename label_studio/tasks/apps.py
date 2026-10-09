@@ -17,6 +17,34 @@ class TasksConfig(AppConfig):
         Note: FSM transitions are now registered centrally in fsm/apps.py.
         Do NOT import transitions here to avoid duplicate registration.
         """
+        from django.db.models.signals import post_delete, post_save
+
+        # Keep Task.precomputed_agreement in sync with the annotation set.
+        # Annotation.objects.bulk_create bypasses post_save (task imports, DM
+        # actions), so the custom post_bulk_create signal is covered too.
+        from tasks.agreement import (
+            on_annotation_deleted_update_agreement,
+            on_annotation_saved_update_agreement,
+            on_annotations_bulk_created_update_agreement,
+        )
+        from tasks.models import Annotation, post_bulk_create
+
+        post_save.connect(
+            on_annotation_saved_update_agreement,
+            sender=Annotation,
+            dispatch_uid='tasks.agreement.on_annotation_saved_update_agreement',
+        )
+        post_delete.connect(
+            on_annotation_deleted_update_agreement,
+            sender=Annotation,
+            dispatch_uid='tasks.agreement.on_annotation_deleted_update_agreement',
+        )
+        post_bulk_create.connect(
+            on_annotations_bulk_created_update_agreement,
+            sender=Annotation,
+            dispatch_uid='tasks.agreement.on_annotations_bulk_created_update_agreement',
+        )
+
         # Community review workflow: register review columns (reviewed, reviewers,
         # reviews_*, reviewed_at) into the Data Manager annotation map and provide
         # exact-match filtering for the `reviewers` column through the

@@ -19,6 +19,7 @@ from django.db.models import (
     Case,
     DateTimeField,
     Exists,
+    ExpressionWrapper,
     F,
     FloatField,
     Func,
@@ -764,6 +765,18 @@ def annotate_predictions_model_versions(queryset):
         return queryset.annotate(predictions_model_versions=ArrayAgg('predictions__model_version', default=Value([])))
 
 
+def annotate_agreement(queryset):
+    """Agreement column: percent scale (0-100).
+
+    Task.precomputed_agreement holds the raw [0, 1] score computed by
+    tasks.agreement; the Data Manager agreement column/filter and the
+    frontend Agreement cell use percentages (`${value}%`).
+    """
+    return queryset.annotate(
+        agreement=ExpressionWrapper(F('precomputed_agreement') * Value(100.0), output_field=FloatField())
+    )
+
+
 def annotate_avg_lead_time(queryset):
     return queryset.annotate(avg_lead_time=Avg('annotations__lead_time'))
 
@@ -813,6 +826,7 @@ settings.DATA_MANAGER_ANNOTATIONS_MAP = {
     'predictions_model_versions': annotate_predictions_model_versions,
     'predictions_score': annotate_predictions_score,
     'annotators': annotate_annotators,
+    'agreement': annotate_agreement,
     'annotations_ids': annotate_annotations_ids,
     'file_upload': file_upload,
     'draft_exists': annotate_draft_exists,

@@ -444,6 +444,7 @@ class DataManagerTaskSerializer(TaskSerializer):
     annotations = serializers.SerializerMethodField(required=False, read_only=True)
     drafts = AnnotationDraftDMFieldSerializer(required=False, read_only=True)
     annotators = AnnotatorsDMFieldSerializer(required=False, read_only=True)
+    agreement = serializers.SerializerMethodField(required=False, read_only=True)
 
     inner_id = serializers.IntegerField(required=False)
     cancelled_annotations = serializers.IntegerField(required=False)
@@ -573,6 +574,21 @@ class DataManagerTaskSerializer(TaskSerializer):
         if not isinstance(task, Task):
             return []
         return [{'user_id': a.user_id, 'role': a.role} for a in task.assignments.all()]
+
+    @staticmethod
+    def get_agreement(obj):
+        """Agreement score in percent (0-100), or None when not computable.
+
+        Reads the `agreement` annotation (precomputed_agreement * 100) when the
+        Data Manager pipeline added it; falls back to the stored
+        precomputed_agreement (raw [0, 1] score) so the field stays meaningful
+        in non-DM contexts.
+        """
+        value = getattr(obj, 'agreement', None)
+        if value is not None:
+            return value
+        precomputed = getattr(obj, 'precomputed_agreement', None)
+        return precomputed * 100 if precomputed is not None else None
 
     @staticmethod
     def get_annotators(obj):
