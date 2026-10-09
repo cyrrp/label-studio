@@ -134,8 +134,8 @@ describe("CurrentTask", () => {
     expect(getByTestId("next-task").disabled).toBe(true);
   });
 
-  it("does NOT disable postpone button when allow_skip=false in LSO (non-enterprise)", () => {
-    // In LSO (non-enterprise), allow_skip field doesn't exist/affect behavior
+  it("disables postpone button when allow_skip=false in LSO (non-enterprise)", () => {
+    // allow_skip is honored regardless of edition
     setupAppSettings({ enterprise: false });
     store.hasInterface.mockImplementation((interfaceName: string) =>
       ["skip", "postpone", "topbar:prevnext", "topbar:task-counter"].includes(interfaceName),
@@ -144,8 +144,7 @@ describe("CurrentTask", () => {
 
     const { getByTestId } = render(<CurrentTask store={store} />);
 
-    // In LSO, postpone button should NOT be disabled even when allow_skip=false
-    expect(getByTestId("next-task").disabled).toBe(false);
+    expect(getByTestId("next-task").disabled).toBe(true);
   });
 
   it("disables postpone button when allow_skip=false in LSE (enterprise)", () => {

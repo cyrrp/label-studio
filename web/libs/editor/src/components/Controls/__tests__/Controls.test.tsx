@@ -63,8 +63,8 @@ describe("Controls", () => {
     (window as any).APP_SETTINGS = undefined;
   });
 
-  test("Skip button NOT disabled when allow_skip=false in LSO (non-enterprise)", () => {
-    // In LSO (non-enterprise), allow_skip field doesn't exist/affect behavior
+  test("Skip button disabled when allow_skip=false in LSO (non-enterprise)", () => {
+    // allow_skip is honored regardless of edition
     setupAppSettings({ enterprise: false });
     const mockStore = createMockStore({
       task: { id: 1, allow_skip: false },
@@ -83,9 +83,8 @@ describe("Controls", () => {
     );
 
     const skipButton = getByText(/Skip/i).closest("button");
-    // In LSO, skip button should NOT be disabled even when allow_skip=false
-    expect(skipButton).not.toBeDisabled();
-    expect(skipButton).toHaveAttribute("title", "Cancel (skip) task: [ Ctrl+Space ]");
+    expect(skipButton).toBeDisabled();
+    expect(skipButton).toHaveAttribute("title", "This task cannot be skipped");
   });
 
   test("Skip button disabled when allow_skip=false in LSE (enterprise)", () => {

@@ -26,8 +26,9 @@ const TemplatesInGroup = ({ templates, group, onSelectRecipe, isEdition }) => {
   return (
     <ul>
       {picked.map((recipe) => {
+        // CE build: enterprise templates are ordinary label configs, enable them locally
         const isEnterpriseTemplate = recipe.type === "enterprise";
-        const isDisabled = isCommunityEdition && isEnterpriseTemplate;
+        const isDisabled = false;
 
         return (
           <li

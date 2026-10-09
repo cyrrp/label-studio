@@ -147,8 +147,7 @@ export const Controls = controlsInjector(
       if (store.hasInterface("skip")) {
         const task = store.task;
 
-        const isEnterprise = window.APP_SETTINGS?.billing?.enterprise;
-        const skipDisabled = isEnterprise ? task?.allow_skip === false : false;
+        const skipDisabled = task?.allow_skip === false;
         const userRole = window.APP_SETTINGS?.user?.role;
         const hasForceSkipPermission = MANAGER_ROLES.includes(userRole);
         const canSkip = !skipDisabled || hasForceSkipPermission;

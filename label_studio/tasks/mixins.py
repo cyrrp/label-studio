@@ -86,7 +86,7 @@ class TaskMixin:
         return Q(reviews__result=ReviewResult.REJECTED) & Q(reviews__updated_at__gt=F('updated_at'))
 
     def can_be_skipped(self) -> bool:
-        return True
+        return self.allow_skip
 
 
 class AnnotationMixin:

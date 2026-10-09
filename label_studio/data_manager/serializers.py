@@ -469,7 +469,7 @@ class DataManagerTaskSerializer(TaskSerializer):
     class Meta:
         model = Task
         ref_name = 'data_manager_task_serializer'
-        exclude = ('precomputed_agreement', 'allow_skip')
+        exclude = ('precomputed_agreement',)
         expandable_fields = {'annotations': (AnnotationSerializer, {'many': True})}
 
     def to_representation(self, obj):

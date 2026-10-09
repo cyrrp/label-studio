@@ -168,6 +168,7 @@
 	customHotkeys: __customHotkeys,
 
       allow_newsletters: {% if user.allow_newsletters is None %}null{% else %}{{user.allow_newsletters|yesno:"true,false"}}{% endif %},
+      role: {{ user.org_role|json_dumps_ensure_ascii|safe }},
       {% if user.avatar %}
       avatar: "{{user.avatar_url|safe}}",
       {% endif %}

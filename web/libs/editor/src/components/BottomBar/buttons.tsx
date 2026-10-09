@@ -108,8 +108,7 @@ const MANAGER_ROLES = ["OW", "AD", "MA"];
 export const SkipButton = memo(
   observer(({ disabled, store, onSkipWithComment }: SkipButtonProps) => {
     const task = store.task;
-    const isEnterprise = (window as any).APP_SETTINGS?.billing?.enterprise;
-    const skipDisabled = isEnterprise ? (task as any)?.allow_skip === false : false;
+    const skipDisabled = (task as any)?.allow_skip === false;
     const userRole = (window as any).APP_SETTINGS?.user?.role;
     const hasForceSkipPermission = MANAGER_ROLES.includes(userRole);
     const canSkip = !skipDisabled || hasForceSkipPermission;

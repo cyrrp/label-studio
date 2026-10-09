@@ -960,6 +960,40 @@ export class LSFWrapper {
     }
   };
 
+  /** @private */
+  onGroundTruth = async (ls, annotation, value) => {
+    const { task } = this;
+
+    // Ground truth can only be set on annotations persisted on the server
+    if (!annotation?.pk) return;
+
+    const result = await this.withinLoadingState(async () => {
+      return this.datamanager.apiCall(
+        "updateAnnotation",
+        {
+          taskID: task.id,
+          annotationID: annotation.pk,
+        },
+        {
+          body: { ground_truth: value },
+        },
+      );
+    });
+    const status = result?.$meta?.status;
+
+    if (status !== undefined && status < 400) {
+      // Keep the annotation stored on the task in sync so the ground truth
+      // indicator stays consistent when the task is re-rendered from store
+      const storedAnnotation = task.annotations?.find((a) => Number(a.pk ?? a.id) === Number(annotation.pk));
+
+      if (storedAnnotation) storedAnnotation.ground_truth = value;
+    } else if (status !== undefined) {
+      this.showOperationToast(status, undefined, "Ground truth is not updated", result);
+    }
+
+    this.datamanager.invoke("updateAnnotation", ls, annotation, result);
+  };
+
   draftToast = (status, result = null) => {
     this.showOperationToast(status, "Draft saved successfully", "Draft is not saved", result);
   };
@@ -1039,8 +1073,7 @@ export class LSFWrapper {
     // Manager roles that can force-skip unskippable tasks (OW=Owner, AD=Admin, MA=Manager)
     const MANAGER_ROLES = ["OW", "AD", "MA"];
     const task = this.task;
-    const isEnterprise = window.APP_SETTINGS?.billing?.enterprise;
-    const skipDisabled = isEnterprise ? task?.allow_skip === false : false;
+    const skipDisabled = task?.allow_skip === false;
     const userRole = window.APP_SETTINGS?.user?.role;
     const hasForceSkipPermission = MANAGER_ROLES.includes(userRole);
     const canSkip = !skipDisabled || hasForceSkipPermission;

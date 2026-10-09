@@ -141,8 +141,8 @@ describe("Controls", () => {
     expect(mockStore.skipTask).toHaveBeenCalled();
   });
 
-  test("Skip button NOT disabled when allow_skip=false in LSO (non-enterprise)", () => {
-    // In LSO (non-enterprise), allow_skip field doesn't exist/affect behavior
+  test("Skip button disabled when allow_skip=false in LSO (non-enterprise)", () => {
+    // allow_skip is honored regardless of edition
     setupAppSettings({ enterprise: false });
     mockStore.hasInterface = (a: string) => a === "skip";
     mockStore.task = { id: 1, allow_skip: false };
@@ -154,8 +154,7 @@ describe("Controls", () => {
     );
 
     const skipTask = getByLabelText("skip-task");
-    // In LSO, skip button should NOT be disabled even when allow_skip=false
-    expect(skipTask).not.toBeDisabled();
+    expect(skipTask).toBeDisabled();
   });
 
   test("Skip button disabled when allow_skip=false in LSE (enterprise)", () => {

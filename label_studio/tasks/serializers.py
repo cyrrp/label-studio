@@ -336,7 +336,7 @@ class TaskSimpleSerializer(FlexFieldsModelSerializer):
 
     class Meta:
         model = Task
-        exclude = ('precomputed_agreement', 'allow_skip')
+        exclude = ('precomputed_agreement',)
 
 
 class BaseTaskSerializer(FlexFieldsModelSerializer):
@@ -433,7 +433,7 @@ class BaseTaskSerializer(FlexFieldsModelSerializer):
 
     class Meta:
         model = Task
-        exclude = ('precomputed_agreement', 'allow_skip')
+        exclude = ('precomputed_agreement',)
 
 
 class BaseTaskSerializerBulk(serializers.ListSerializer):
