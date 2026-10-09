@@ -460,6 +460,7 @@ class DataManagerTaskSerializer(TaskSerializer):
     avg_lead_time = serializers.FloatField(required=False)
     draft_exists = serializers.BooleanField(required=False)
     updated_by = UpdatedByDMFieldSerializer(required=False, read_only=True)
+    assignments = serializers.SerializerMethodField(required=False, read_only=True)
     state = FSMStateField(read_only=True)  # FSM state - automatically uses annotation if present
 
     CHAR_LIMITS = 500
@@ -565,6 +566,13 @@ class DataManagerTaskSerializer(TaskSerializer):
         # User reference in Data Manager once global user fetching is gone.
         user_data = CompletedByDMSerializer(obj.updated_by, context=self.context).data
         return [{'user_id': obj.updated_by_id, **user_data}]
+
+    @staticmethod
+    def get_assignments(task):
+        """Compact list of manual task assignments: [{'user_id': ..., 'role': 'AN'|'RE'}]."""
+        if not isinstance(task, Task):
+            return []
+        return [{'user_id': a.user_id, 'role': a.role} for a in task.assignments.all()]
 
     @staticmethod
     def get_annotators(obj):

@@ -770,6 +770,8 @@ class AnnotationsListAPI(GetParentObjectMixin, generics.ListCreateAPIView):
 
     def get_queryset(self):
         task = generics.get_object_or_404(Task.objects.for_user(self.request.user), pk=self.kwargs.get('pk', 0))
+        # enforce task-level permissions (manual assignment scoping for annotators)
+        self.check_object_permissions(self.request, task)
         return Annotation.objects.filter(Q(task=task) & Q(was_cancelled=False)).order_by('pk')
 
     def delete_draft(self, draft_id, annotation_id):
@@ -865,12 +867,19 @@ class AnnotationDraftListAPI(generics.ListCreateAPIView):
     )
     queryset = AnnotationDraft.objects.all()
 
+    def _get_checked_task(self):
+        """Return the parent task, enforcing task-level permissions (manual assignment scoping)."""
+        task = generics.get_object_or_404(Task.objects.for_user(self.request.user), pk=self.kwargs['pk'])
+        self.check_object_permissions(self.request, task)
+        return task
+
     def filter_queryset(self, queryset):
-        task_id = self.kwargs['pk']
-        return queryset.filter(task_id=task_id)
+        task = self._get_checked_task()
+        return queryset.filter(task_id=task.id)
 
     def perform_create(self, serializer):
-        task_id = self.kwargs['pk']
+        task = self._get_checked_task()
+        task_id = task.id
         annotation_id = self.kwargs.get('annotation_id')
         user = self.request.user
         logger.debug(f'User {user} is going to create draft for task={task_id}, annotation={annotation_id}')

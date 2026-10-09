@@ -154,7 +154,7 @@ def get_all_columns(project, *_):
             'title': 'Annotated by',
             'type': 'List',
             'target': 'tasks',
-            'help': 'All users who completed the task',
+            'help': 'All users who completed the task or are assigned to it',
             **({'schema': {'items': project_members}} if not remove_members_schema else {}),
             'visibility_defaults': {'explore': True, 'labeling': False},
             'project_defined': False,

@@ -273,12 +273,6 @@ class Task(TaskMixin, FsmHistoryStateModel):
             else:
                 raise ValidationError(f'Invalid SkipQueue value: {self.project.skip_queue}')
 
-            # for LSE we also need to exclude rejected queue
-            rejected_q = self.get_rejected_query()
-
-            if rejected_q:
-                q &= rejected_q
-
         return q | Q(ground_truth=True)
 
     def has_lock(self, user=None):
@@ -570,6 +564,65 @@ pre_bulk_create = Signal()   # providing args 'objs' and 'batch_size'
 post_bulk_create = Signal()   # providing args 'objs' and 'batch_size'
 
 
+class TaskAssignment(models.Model):
+    """Manual assignment of a task to a user with a specific role.
+
+    Project annotators (organization role 'AN') are only allowed to see and label
+    tasks that are assigned to them via this model. Assignments survive task
+    updates and are removed only when the task or the assignment row is deleted.
+    """
+
+    class Role(models.TextChoices):
+        ANNOTATOR = 'AN', _('annotator')
+        REVIEWER = 'RE', _('reviewer')
+
+    task = models.ForeignKey(
+        'tasks.Task',
+        on_delete=models.CASCADE,
+        related_name='assignments',
+        help_text='Assigned task',
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='task_assignments',
+        help_text='User the task is assigned to',
+    )
+    role = models.CharField(
+        _('role'),
+        max_length=2,
+        choices=Role.choices,
+        default=Role.ANNOTATOR,
+        help_text='Role the user is assigned as: annotator or reviewer',
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='task_assignments_made',
+        help_text='User who created this assignment',
+    )
+    created_at = models.DateTimeField(_('created at'), auto_now_add=True, help_text='Creation time')
+    updated_at = models.DateTimeField(_('updated at'), auto_now=True, help_text='Last update time')
+
+    class Meta:
+        db_table = 'task_assignment'
+        unique_together = [['task', 'user', 'role']]
+        indexes = [models.Index(fields=['task', 'user'])]
+
+    def __str__(self):
+        return f'{self.user_id} as {self.role} on task {self.task_id}'
+
+    @classmethod
+    def assign_to(cls, task, user, role=Role.ANNOTATOR, assigned_by=None):
+        """Assign task to user with the given role, keeping existing rows untouched."""
+        assignment, _ = cls.objects.get_or_create(
+            task=task, user=user, role=role, defaults={'assigned_by': assigned_by}
+        )
+        return assignment
+
+
 class AnnotationQuerySet(models.QuerySet):
     pass
 
@@ -840,6 +893,7 @@ class Annotation(AnnotationMixin, FsmHistoryStateModel):
         self.decrease_project_summary_counters()
 
 
+
 class TaskLockQuerySet(models.QuerySet):
     """Custom QuerySet for TaskLock model"""
 
@@ -959,8 +1013,10 @@ class AnnotationDraft(FsmHistoryStateModel):
         return timesince(self.created_at)
 
     def has_permission(self, user):
-        user.project = self.task.project  # link for activity log
-        return self.task.project.has_permission(user)
+        # delegate to the task so assignment-based restrictions apply to drafts as well
+        if self.task_id is None:
+            return False
+        return self.task.has_permission(user)
 
     def save(self, *args, **kwargs):
         with transaction.atomic():

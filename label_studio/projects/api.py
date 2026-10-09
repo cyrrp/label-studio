@@ -27,7 +27,7 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, OpenApiResponse, extend_schema
 from label_studio_sdk.label_interface.interface import LabelInterface
 from ml.serializers import MLBackendSerializer
-from projects.functions.next_task import get_next_task
+from projects.functions.next_task import get_next_task, scope_tasks_to_assignments
 from projects.functions.stream_history import get_label_stream_history
 from projects.functions.utils import recalculate_created_annotations_and_labels_from_scratch
 from projects.models import Project, ProjectImport, ProjectManager, ProjectReimport, ProjectSummary
@@ -450,8 +450,12 @@ class ProjectNextTaskAPI(generics.RetrieveAPIView):
         project = self.get_object()
         dm_queue = filters_ordering_selected_items_exist(request.data)
         prepared_tasks = get_prepared_queryset(request, project)
+        # annotators are only served tasks manually assigned to them
+        prepared_tasks, assigned_flag = scope_tasks_to_assignments(request.user, project, prepared_tasks)
 
-        next_task, queue_info = get_next_task(request.user, prepared_tasks, project, dm_queue)
+        next_task, queue_info = get_next_task(
+            request.user, prepared_tasks, project, dm_queue, assigned_flag=assigned_flag
+        )
 
         if next_task is None:
             raise NotFound(f'There are no tasks for {request.user}')

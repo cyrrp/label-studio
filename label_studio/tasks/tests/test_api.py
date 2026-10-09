@@ -55,6 +55,7 @@ class TestTaskAPI(APITestCase):
             'comment_count': 0,
             'last_comment_updated_at': None,
             'unresolved_comment_count': 0,
+            'assignments': [],
         }
 
     def test_patch_task(self):

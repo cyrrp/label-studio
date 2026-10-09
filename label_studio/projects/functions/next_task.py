@@ -10,7 +10,7 @@ from django.db.models import Case, Count, Exists, F, Max, OuterRef, Q, QuerySet,
 from django.db.models.fields import DecimalField
 from projects.functions.stream_history import add_stream_history
 from projects.models import Project
-from tasks.models import Annotation, Task
+from tasks.models import Annotation, Task, TaskAssignment
 from users.models import User
 
 logger = logging.getLogger(__name__)
@@ -357,78 +357,22 @@ def get_next_task_without_dm_queue(
     return next_task, use_task_lock, queue_info
 
 
-def skipped_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
-    if not next_task and project.skip_queue == project.SkipQueue.REQUEUE_FOR_ME:
-        q = Q(project=project, task__isnull=False, was_cancelled=True, task__is_labeled=False)
-        skipped_tasks = user.annotations.filter(q).order_by('updated_at').values_list('task__pk', flat=True)
-        if skipped_tasks.exists():
-            preserved_order = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(skipped_tasks)])
-            skipped_tasks = prepared_tasks.filter(pk__in=skipped_tasks).order_by(preserved_order)
+def scope_tasks_to_assignments(
+    user: User, project: Project, prepared_tasks: QuerySet[Task]
+) -> Tuple[QuerySet[Task], bool]:
+    """Restrict the task pool to tasks manually assigned to the user.
 
-            # for assigned annotators locks don't make sense, moreover,
-            # _get_first_unlocked breaks label stream for manual mode because
-            # it evaluates locks based on auto-mode logic and returns None
-            # when there are no more tasks to label in auto-mode
-            if assigned_flag:
-                next_task = fast_first(skipped_tasks)
-            else:
-                next_task = _get_first_unlocked(skipped_tasks, user)
-            queue_info = 'Skipped queue'
+    Project annotators (organization role 'AN') may only be served tasks from their
+    TaskAssignment set; every other role gets the pool back unchanged.
 
-    return next_task, queue_info
+    :return: (possibly narrowed queryset, assigned_flag for get_next_task)
+    """
+    checker = getattr(user, 'is_project_annotator', None)
+    if checker is None or not checker(project):
+        return prepared_tasks, False
 
-
-def postponed_queue(next_task, prepared_tasks, project, user, assigned_flag, queue_info):
-    if not next_task:
-        q = Q(task__project=project, task__isnull=False, was_postponed=True, task__is_labeled=False)
-        postponed_tasks = user.drafts.filter(q).order_by('updated_at').values_list('task__pk', flat=True)
-        if postponed_tasks.exists():
-            preserved_order = Case(*[When(pk=pk, then=pos) for pos, pk in enumerate(postponed_tasks)])
-            postponed_tasks = prepared_tasks.filter(pk__in=postponed_tasks).order_by(preserved_order)
-
-            # for assigned annotators locks don't make sense, moreover,
-            # _get_first_unlocked breaks label stream for manual mode because
-            # it evaluates locks based on auto-mode logic and returns None
-            # when there are no more tasks to label in auto-mode
-            if assigned_flag:
-                next_task = fast_first(postponed_tasks)
-            else:
-                next_task = _get_first_unlocked(postponed_tasks, user)
-            if next_task is not None:
-                next_task.allow_postpone = False
-            queue_info = 'Postponed draft queue'
-
-    return next_task, queue_info
-
-
-def get_task_from_qs_with_sampling(
-    not_solved_tasks: QuerySet[Task],
-    user_solved_tasks_array: List[int],
-    prepared_tasks: QuerySet,
-    user: User,
-    project: Project,
-    queue_info: str,
-) -> Tuple[Union[Task, None], str]:
-    next_task = None
-    if project.sampling == project.SEQUENCE:
-        logger.debug(f'User={user} tries sequence sampling from prepared tasks')
-        next_task = _get_first_unlocked(not_solved_tasks, user)
-        if next_task:
-            queue_info += (' & ' if queue_info else '') + 'Sequence queue'
-
-    elif project.sampling == project.UNCERTAINTY:
-        logger.debug(f'User={user} tries uncertainty sampling from prepared tasks')
-        next_task = _try_uncertainty_sampling(not_solved_tasks, project, user_solved_tasks_array, user, prepared_tasks)
-        if next_task:
-            queue_info += (' & ' if queue_info else '') + 'Active learning or random queue'
-
-    elif project.sampling == project.UNIFORM:
-        logger.debug(f'User={user} tries random sampling from prepared tasks')
-        next_task = _get_random_unlocked(not_solved_tasks, user)
-        if next_task:
-            queue_info += (' & ' if queue_info else '') + 'Uniform random queue'
-
-    return next_task, queue_info
+    assigned = TaskAssignment.objects.filter(task=OuterRef('pk'), user=user)
+    return prepared_tasks.filter(Exists(assigned)), True
 
 
 def get_next_task(

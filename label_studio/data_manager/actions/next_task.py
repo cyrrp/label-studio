@@ -5,7 +5,7 @@ import logging
 from core.permissions import all_permissions
 from data_manager.actions import DataManagerAction
 from data_manager.functions import filters_ordering_selected_items_exist
-from projects.functions.next_task import get_next_task
+from projects.functions.next_task import get_next_task, scope_tasks_to_assignments
 from rest_framework.exceptions import NotFound
 from tasks.serializers import NextTaskSerializer
 
@@ -22,7 +22,9 @@ def next_task(project, queryset, **kwargs):
 
     request = kwargs['request']
     dm_queue = filters_ordering_selected_items_exist(request.data)
-    next_task, queue_info = get_next_task(request.user, queryset, project, dm_queue)
+    # annotators are only served tasks manually assigned to them
+    queryset, assigned_flag = scope_tasks_to_assignments(request.user, project, queryset)
+    next_task, queue_info = get_next_task(request.user, queryset, project, dm_queue, assigned_flag=assigned_flag)
 
     if next_task is None:
         raise NotFound(f'There are no tasks for {request.user}')

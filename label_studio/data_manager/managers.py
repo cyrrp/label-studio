@@ -21,6 +21,7 @@ from django.db.models import (
     Exists,
     F,
     FloatField,
+    Func,
     OuterRef,
     Q,
     Subquery,
@@ -268,6 +269,31 @@ def add_user_filter(enabled, key, _filter, filter_expressions):
         return 'continue'
 
 
+def add_annotators_filter(enabled, _filter, filter_expressions):
+    """Filter tasks by `annotators`: matches annotation authors AND assigned users (TaskAssignment).
+
+    Uses Exists subqueries to stay correct for multi-valued relations and avoid duplicate rows.
+    """
+    if not enabled:
+        return
+    from tasks.models import Annotation, TaskAssignment
+
+    if _filter.operator in (Operator.CONTAINS, Operator.NOT_CONTAINS):
+        user_id = int(_filter.value)
+        annotated = Exists(Annotation.objects.filter(task=OuterRef('pk'), completed_by_id=user_id))
+        assigned = Exists(TaskAssignment.objects.filter(task=OuterRef('pk'), user_id=user_id))
+        q = Q(annotated) | Q(assigned)
+        filter_expressions.append(q if _filter.operator == Operator.CONTAINS else ~q)
+        return 'continue'
+    elif _filter.operator == Operator.EMPTY:
+        value = cast_bool_from_str(_filter.value)
+        annotated = Exists(Annotation.objects.filter(task=OuterRef('pk'), completed_by_id__isnull=False))
+        assigned = Exists(TaskAssignment.objects.filter(task=OuterRef('pk')))
+        q = Q(annotated) | Q(assigned)
+        filter_expressions.append(~q if value else q)
+        return 'continue'
+
+
 def apply_filters(queryset, filters, project, request):
     if not filters:
         return queryset
@@ -308,10 +334,8 @@ def apply_filters(queryset, filters, project, request):
                 filter_expressions.append(filter_expression)
                 continue
 
-            # annotators
-            result = add_user_filter(
-                field_name == 'annotators', 'annotations__completed_by', _filter, filter_expressions
-            )
+            # annotators: union of users who annotated the task and users assigned to it
+            result = add_annotators_filter(field_name == 'annotators', _filter, filter_expressions)
             if result == 'continue':
                 continue
 
@@ -527,6 +551,18 @@ class TaskQuerySet(FSMStateQuerySetMixin, models.QuerySet):
             project = Project.objects.get(pk=prepare_params.project)
 
         request = prepare_params.request
+
+        # Real task assignment: project annotators may only see tasks assigned to them.
+        # Note: multi-project queries are not scoped (assignment is per-project by design).
+        if not prepare_params.is_multi_project:
+            checker = getattr(getattr(request, 'user', None), 'is_project_annotator', None)
+            if checker is not None and checker(project):
+                from tasks.models import TaskAssignment
+
+                queryset = queryset.filter(
+                    Exists(TaskAssignment.objects.filter(task=OuterRef('pk'), user=request.user))
+                )
+
         queryset = apply_filters(queryset, prepare_params.filters, project, request)
         queryset = apply_ordering(queryset, prepare_params.ordering, project, request, view_data=prepare_params.data)
 
@@ -654,12 +690,35 @@ def annotate_predictions_results(queryset):
 
 
 def annotate_annotators(queryset):
+    """Annotators column: union of annotation authors and users assigned to the task."""
     if settings.DJANGO_DB == settings.DJANGO_DB_SQLITE:
+        queryset = queryset.annotate(
+            _annotated_users=Coalesce(
+                GroupConcat('annotations__completed_by'), Value(''), output_field=models.CharField()
+            ),
+            _assigned_users=Coalesce(
+                GroupConcat('assignments__user'), Value(''), output_field=models.CharField()
+            ),
+        )
         return queryset.annotate(
-            annotators=Coalesce(GroupConcat('annotations__completed_by'), Value(''), output_field=models.CharField())
+            annotators=Case(
+                When(_annotated_users='', then=F('_assigned_users')),
+                When(_assigned_users='', then=F('_annotated_users')),
+                default=Concat(F('_annotated_users'), Value(','), F('_assigned_users')),
+                output_field=models.CharField(),
+            )
         )
     else:
-        return queryset.annotate(annotators=ArrayAgg('annotations__completed_by', distinct=True, default=Value([])))
+        from django.contrib.postgres.fields import ArrayField
+
+        return queryset.annotate(
+            annotators=Func(
+                ArrayAgg('annotations__completed_by', distinct=True, default=Value([])),
+                ArrayAgg('assignments__user', distinct=True, default=Value([])),
+                function='array_cat',
+                output_field=ArrayField(models.IntegerField()),
+            )
+        )
 
 
 def annotate_predictions_score(queryset):
