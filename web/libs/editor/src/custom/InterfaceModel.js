@@ -5,6 +5,7 @@ import { guidGenerator } from "../utils/unique";
 import InfoModal from "../components/Infomodal/Infomodal";
 import { getInterface } from "./registry";
 import { createInterfaceAPI, writeNativeOutput } from "./api";
+import { isSemanticallyVisible } from "./visibility";
 
 export const InterfaceModel = types
   .compose(
@@ -82,6 +83,8 @@ export const InterfaceModel = types
     },
     validate() {
       try {
+        // Skip inapplicable branches, but still validate inactive wizard pages.
+        if (!isSemanticallyVisible(self)) return true;
         if (self.runtimeError) throw new Error(self.runtimeError);
         const definition = getInterface(self.component);
         if (!definition) throw new Error(`Interface ${self.component} is not loaded`);

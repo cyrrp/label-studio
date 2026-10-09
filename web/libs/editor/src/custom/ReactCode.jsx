@@ -26,6 +26,11 @@ class InterfaceErrorBoundary extends React.Component {
   static getDerivedStateFromError(error) {
     return { error };
   }
+  componentDidMount() {
+    // Annotation changes remount the boundary; clear its previous error only
+    // after the component mounts successfully, never while showing the fallback.
+    if (!this.state.error && this.props.item.runtimeError) this.props.item.setRuntimeError(null);
+  }
   componentDidCatch(error) {
     this.props.item.setRuntimeError(error.message);
   }

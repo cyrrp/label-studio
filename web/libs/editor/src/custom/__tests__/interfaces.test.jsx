@@ -6,7 +6,7 @@ import { createInterfaceAPI } from "../api";
 import { HtxReactCode } from "../ReactCode";
 import { registerInterface, loadInterface, getInterface } from "../registry";
 import { readFileSync } from "node:fs";
-import { guardedHotkey } from "../visibility";
+import { guardedHotkey, isHiddenInUI } from "../visibility";
 
 const CONFIG = `<View>
   <Text name="document" value="$text"/>
@@ -46,6 +46,40 @@ describe("interface API v1", () => {
     expect(ann.validate()).toBe(false);
   });
 
+  it.each([
+    ["quality", []],
+    ["score", null],
+    ["comment", []],
+  ])("preserves other imported answers when clearing shared output %s", (name, emptyValue) => {
+    const config = CONFIG.replace('outputs="quality,score,comment"', `outputs="${name}"`);
+    const ann = createAnnotation(config, [
+      { id: "shared", from_name: "quality", to_name: "document", type: "choices", value: { choices: ["Good"] } },
+      { id: "shared", from_name: "score", to_name: "document", type: "number", value: { number: 8 } },
+      { id: "shared", from_name: "comment", to_name: "document", type: "textarea", value: { text: ["Keep me"] } },
+    ]);
+    const api = createInterfaceAPI(ann.names.get("assessment"));
+    const original = ann.serializeAnnotation();
+    const originalValue = api.getValue(name);
+    const remaining = original.filter((result) => result.from_name !== name);
+    expect(original).toHaveLength(3);
+    ann.reinitHistory();
+
+    api.clearValue(name);
+    expect(api.getValue(name)).toEqual(emptyValue);
+    // Both surviving answers are outside this component's declared outputs.
+    expect(ann.serializeAnnotation()).toEqual(remaining);
+
+    ann.undo();
+    expect(api.getValue(name)).toEqual(originalValue);
+    expect(ann.serializeAnnotation()).toEqual(original);
+    ann.redo();
+    expect(api.getValue(name)).toEqual(emptyValue);
+    expect(ann.serializeAnnotation()).toEqual(remaining);
+
+    const reopened = createAnnotation(config, ann.serializeAnnotation());
+    expect(reopened.serializeAnnotation()).toEqual(remaining);
+  });
+
   it("rejects undeclared, invalid and read-only writes without modifying results", () => {
     const ann = createAnnotation(CONFIG);
     const api = createInterfaceAPI(ann.names.get("assessment"));
@@ -79,6 +113,80 @@ describe("interface API v1", () => {
     expect(createAnnotation(CONFIG.replace('outputs="quality,score,comment"', 'options="broken"')).validate()).toBe(
       false,
     );
+  });
+
+  it.each(["definition", "registered"])("skips custom %s validation in a conditional branch", (mode) => {
+    const component = `conditional-${mode}`;
+    const validate = mock((api) => api.getValue("comment").length > 0 || "Describe the defect");
+    registerInterface(component, {
+      apiVersion: 1,
+      Component: () => null,
+      ...(mode === "definition" ? { validate } : {}),
+    });
+    const ann = createAnnotation(`<View><Text name="document" value="$text"/>
+      <Choices name="defects" toName="document"><Choice value="Yes"/><Choice value="No"/></Choices>
+      <View visibleWhen="choice-selected" whenTagName="defects" whenChoiceValue="Yes">
+        <ReactCode name="form" component="${component}" outputs="comment"/>
+        <TextArea name="comment" toName="document"/>
+      </View></View>`);
+    const defects = ann.names.get("defects");
+    const api = createInterfaceAPI(ann.names.get("form"));
+    if (mode === "registered") api.registerValidator(validate);
+
+    defects.findLabel("No").toggleSelected();
+    expect(api.isApplicable("comment")).toBe(false);
+    expect(ann.validate()).toBe(true);
+    expect(validate).not.toHaveBeenCalled();
+
+    defects.findLabel("Yes").toggleSelected();
+    expect(ann.validate()).toBe(false);
+    expect(validate).toHaveBeenCalledTimes(1);
+    api.setValue("comment", "Bottom of the document is cut off");
+    expect(ann.validate()).toBe(true);
+    expect(validate).toHaveBeenCalledTimes(2);
+
+    defects.findLabel("No").toggleSelected();
+    api.clearValue("comment");
+    expect(ann.validate()).toBe(true);
+    expect(validate).toHaveBeenCalledTimes(2);
+    api.dispose();
+  });
+
+  it("validates applicable React forms on inactive wizard pages", () => {
+    const validate = mock((api) => api.getValue("comment").length > 0 || "Describe the defect");
+    registerInterface("conditional-wizard-form", { apiVersion: 1, Component: () => null, validate });
+    const ann = createAnnotation(`<View><Text name="document" value="$text"/>
+      <ReactCode name="navigation" component="wizard" steps="one,two"/>
+      <View visibleWhen="choice-selected" whenTagName="navigation" whenChoiceValue="one">
+        <Choices name="defects" toName="document"><Choice value="Yes"/><Choice value="No"/></Choices>
+      </View>
+      <View visibleWhen="choice-selected" whenTagName="navigation" whenChoiceValue="two">
+        <View visibleWhen="choice-selected" whenTagName="defects" whenChoiceValue="Yes">
+          <ReactCode name="form" component="conditional-wizard-form" outputs="comment"/>
+          <TextArea name="comment" toName="document"/>
+        </View>
+      </View></View>`);
+    const navigation = ann.names.get("navigation");
+    const defects = ann.names.get("defects");
+    const form = ann.names.get("form");
+    const api = createInterfaceAPI(form);
+    defects.findLabel("No").toggleSelected();
+    expect(ann.validate()).toBe(true);
+    expect(navigation.currentpage).toBe(1);
+    expect(validate).not.toHaveBeenCalled();
+
+    defects.findLabel("Yes").toggleSelected();
+    expect(isHiddenInUI(form)).toBe(true);
+    expect(api.isApplicable("comment")).toBe(true);
+    expect(form.validate()).toBe(false);
+    expect(ann.validate()).toBe(false);
+    expect(navigation.currentpage).toBe(2);
+
+    api.setValue("comment", "Bottom of the document is cut off");
+    navigation.goTo(1);
+    expect(ann.validate()).toBe(true);
+    expect(navigation.currentpage).toBe(1);
+    expect(ann.serializeAnnotation().map((result) => result.from_name).sort()).toEqual(["comment", "defects"]);
   });
 
   it("cleans resources and prevents a disposed API from writing to a new task", async () => {
@@ -217,6 +325,58 @@ describe("interface API v1", () => {
       });
       expect(host.querySelector('[role="alert"]').textContent).toContain("Rendering failed");
       expect(ann.validate()).toBe(false);
+    } finally {
+      act(() => root.unmount());
+      consoleError.mockRestore();
+    }
+  });
+
+  it("clears a render error only after that annotation's component recovers", () => {
+    let shouldFail = true;
+    registerInterface("recoverable-ui", {
+      apiVersion: 1,
+      Component: ({ values }) => {
+        if (shouldFail) throw new Error("Temporary render failure");
+        return <output>{values.quality.join(", ")}</output>;
+      },
+    });
+    const ann = createAnnotation(CONFIG.replace('component="document-assessment"', 'component="recoverable-ui"'));
+    const item = ann.names.get("assessment");
+    createInterfaceAPI(item).setValue("quality", ["Good"]);
+    const saved = ann.serializeAnnotation();
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    try {
+      act(() => root.render(<HtxReactCode item={item} />));
+      expect(host.querySelector('[role="alert"]').textContent).toContain("Temporary render failure");
+      expect(ann.validate()).toBe(false);
+
+      shouldFail = false;
+      let next;
+      act(() => {
+        next = ann.store.annotationStore.addAnnotation({ result: [] });
+        ann.store.annotationStore.selectAnnotation(next.id);
+        createInterfaceAPI(next.names.get("assessment")).setValue("quality", ["Good"]);
+      });
+      expect(host.querySelector("output").textContent).toBe("Good");
+      expect(next.validate()).toBe(true);
+      expect(item.runtimeErrors.get(ann.id)).toBe("Temporary render failure");
+
+      // Retrying the original annotation while it still fails must keep submit blocked.
+      shouldFail = true;
+      act(() => ann.store.annotationStore.selectAnnotation(ann.id));
+      expect(host.querySelector('[role="alert"]').textContent).toContain("Temporary render failure");
+      expect(ann.validate()).toBe(false);
+
+      shouldFail = false;
+      act(() => ann.store.annotationStore.selectAnnotation(next.id));
+      act(() => ann.store.annotationStore.selectAnnotation(ann.id));
+      expect(host.querySelector("output").textContent).toBe("Good");
+      expect(item.runtimeError).toBeUndefined();
+      expect(ann.validate()).toBe(true);
+      expect(ann.serializeAnnotation()).toEqual(saved);
     } finally {
       act(() => root.unmount());
       consoleError.mockRestore();

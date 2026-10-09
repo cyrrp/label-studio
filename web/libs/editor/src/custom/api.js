@@ -145,7 +145,8 @@ export function writeNativeOutput(item, name, value) {
   }
   const empty = value === null || value === "" || (Array.isArray(value) && !value.length);
   if (empty) {
-    if (tag.result) ann.deleteArea(tag.result.area);
+    const result = tag.result;
+    if (result) result.area.removeResult(result);
     if (tag.type === "choices") tag.setResult([]);
     else tag.needsUpdate();
   } else if (tag.type === "choices") {

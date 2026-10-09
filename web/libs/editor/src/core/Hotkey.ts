@@ -82,12 +82,15 @@ const translateNumpad = (event: any) => {
 keymaster.filter = (event) => {
   if (keymaster.getScope() === "__none__") return false;
 
-  const tag = (event.target || event.srcElement)?.tagName;
+  const target = event.target || event.srcElement;
+  const tag = target?.tagName;
   const inNumberPadCodeRange = (event as any).keyCode >= 96 && (event as any).keyCode <= 105;
 
   if (inNumberPadCodeRange) translateNumpad(event);
   if (tag) {
-    keymaster.setScope(/^(INPUT|TEXTAREA|SELECT)$/.test(tag) ? INPUT_SCOPE : DEFAULT_SCOPE);
+    // Focusing a choice (including wizard autofocus) must not disable labeling shortcuts.
+    const isChoice = tag === "INPUT" && /^(checkbox|radio)$/.test(target.type);
+    keymaster.setScope(!isChoice && /^(INPUT|TEXTAREA|SELECT)$/.test(tag) ? INPUT_SCOPE : DEFAULT_SCOPE);
   }
 
   return true;
