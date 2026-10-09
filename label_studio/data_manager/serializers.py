@@ -17,6 +17,7 @@ from tasks.serializers import (
     AnnotationDraftSerializer,
     AnnotationSerializer,
     AnnotationStubSerializer,
+    CompletedByDMSerializer,
     PredictionSerializer,
     TaskSerializer,
 )
@@ -556,9 +557,14 @@ class DataManagerTaskSerializer(TaskSerializer):
     def get_storage_filename(task):
         return task.get_storage_filename()
 
-    @staticmethod
-    def get_updated_by(obj):
-        return [{'user_id': obj.updated_by_id}] if obj.updated_by_id else []
+    def get_updated_by(self, obj):
+        if not obj.updated_by_id or not obj.updated_by:
+            return []
+        # Return full user data (same shape as annotators in later releases):
+        # a bare {'user_id': N} stub becomes an unresolvable mobx-state-tree
+        # User reference in Data Manager once global user fetching is gone.
+        user_data = CompletedByDMSerializer(obj.updated_by, context=self.context).data
+        return [{'user_id': obj.updated_by_id, **user_data}]
 
     @staticmethod
     def get_annotators(obj):

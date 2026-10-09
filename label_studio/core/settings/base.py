@@ -112,6 +112,11 @@ if HOSTNAME:
                 logger.info('=> Django URL prefix is set to: %s', FORCE_SCRIPT_NAME)
 
 FRONTEND_HMR = get_bool_env('FRONTEND_HMR', False)
+CUSTOM_INTERFACE_MODULES = json.loads(get_env('CUSTOM_INTERFACE_MODULES', '{}'))
+if not isinstance(CUSTOM_INTERFACE_MODULES, dict) or not all(
+    isinstance(name, str) and isinstance(url, str) for name, url in CUSTOM_INTERFACE_MODULES.items()
+):
+    raise ImproperlyConfigured('CUSTOM_INTERFACE_MODULES must be a JSON object mapping component names to URLs')
 FRONTEND_HOSTNAME = get_env('FRONTEND_HOSTNAME', 'http://localhost:8010' if FRONTEND_HMR else HOSTNAME)
 
 DOMAIN_FROM_REQUEST = get_bool_env('DOMAIN_FROM_REQUEST', False)

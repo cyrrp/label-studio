@@ -6,6 +6,7 @@ import Tree from "../core/Tree";
 import { AnnotationMixin } from "../mixins/AnnotationMixin";
 import { isDefined } from "../utils/utilities";
 import { FF_LSDV_4583, isFF } from "../utils/feature-flags";
+import { hasWizardAncestor, isSemanticallyVisible } from "../custom/visibility";
 
 const resultTypes = [
   "labels",
@@ -186,6 +187,9 @@ const Result = types
      */
     get canBeSubmitted() {
       const control = self.from_name;
+
+      // Wizard pages are navigation, not conditional exclusion of answers.
+      if (!control.perregion && hasWizardAncestor(control)) return isSemanticallyVisible(control);
 
       // Find the first node moving up in the tree with the given visibleWhen value
       function findParentWithVisibleWhen(control, visibleWhen) {

@@ -308,7 +308,8 @@ export class ConfigValidator {
 
     for (const child of flatTree) {
       try {
-        const model = Registry.getModelByTag(child.type);
+        const registeredModel = Registry.getModelByTag(child.type);
+        const model = registeredModel.getValidationModel?.(child) ?? registeredModel;
         // Validate name attribute
         const nameValidation = validateNameTag(child, model);
 

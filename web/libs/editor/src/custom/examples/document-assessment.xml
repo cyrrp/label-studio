@@ -1,0 +1,13 @@
+<View>
+  <Text name="document" value="$text"/>
+  <ReactCode name="assessment" component="document-assessment" outputs="quality,score,comment"
+    options='{"title":"Document assessment"}'/>
+  <!-- Native outputs define the export schema; React renders their UI. -->
+  <View style="display:none">
+    <Choices name="quality" toName="document" required="true">
+      <Choice value="Good"/><Choice value="Poor"/>
+    </Choices>
+    <Number name="score" toName="document" min="0" max="10"/>
+    <TextArea name="comment" toName="document"/>
+  </View>
+</View>

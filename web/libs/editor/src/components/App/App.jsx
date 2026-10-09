@@ -19,7 +19,8 @@ import { TreeValidation } from "../TreeValidation/TreeValidation";
 import "../../tags/object";
 import "../../tags/control";
 import "../../tags/visual";
-import "../../tags/Custom";
+// Fork: ReactCode extension registration and helpers
+import "../../custom";
 
 /**
  * Utils and common components

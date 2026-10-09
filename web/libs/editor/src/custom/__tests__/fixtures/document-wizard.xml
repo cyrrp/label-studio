@@ -1,0 +1,91 @@
+<View style="display:flex; flex-direction:row; align-items:flex-start; gap:16px;">
+  <View style="flex:1 1 auto; min-width:0;">
+    <Image name="img" value="$image" zoom="true" zoomControl="true" rotateControl="true"/>
+  </View>
+
+  <View style="flex:0 0 360px; max-width:360px;">
+
+    <ReactCode component="wizard" name="wz"
+      steps="modality,defects,readability,resident"
+      steplabels="Модальность,Дефекты,Читаемость,Резидентство"
+      nextlabel="Далее →" prevlabel="← Назад"
+      nexthotkey="enter,alt+right" prevhotkey="shift+enter,alt+left"/>
+
+    <!-- Шаг 1: модальность -->
+    <View visibleWhen="choice-selected" whenTagName="wz" whenChoiceValue="modality">
+      <Header value="1. Что на изображении?"/>
+      <Choices name="modality" toName="img" choice="single" required="true" requiredMessage="Выберите тип изображения">
+        <Choice value="Оригинал" hotkey="1"/>
+        <Choice value="Ксерокопия" hotkey="2"/>
+        <Choice value="Распечатка" hotkey="3"/>
+        <Choice value="Дисплей" hotkey="4"/>
+        <Choice value="Дипфейк" hotkey="5"/>
+        <Choice value="Граф. редактор" hotkey="6"/>
+        <Choice value="Не определяю" hotkey="0" hint="Не могу оценить тип изображения"/>
+      </Choices>
+
+      <TextArea name="comment_modality" toName="img" placeholder="Что мешает определить тип?"
+                visibleWhen="choice-selected" whenTagName="modality" whenChoiceValue="Не определяю"
+                required="true" requiredMessage="Опишите, что мешает определить"/>
+    </View>
+
+    <!-- Шаг 2: дефекты -->
+    <View visibleWhen="choice-selected" whenTagName="wz" whenChoiceValue="defects">
+      <View visibleWhen="choice-selected" whenTagName="modality"
+            whenChoiceValue="Оригинал,Ксерокопия,Распечатка,Дисплей,Дипфейк,Граф. редактор">
+        <Header value="2. Дефекты документа"/>
+        <Choices name="defects" toName="img" choice="multiple" showInline="true">
+          <Choice value="Нет подписи паспортиста" hotkey="1"/>
+          <Choice value="Нет печати" hotkey="2"/>
+          <Choice value="Нет защитных элементов" hotkey="3"/>
+          <Choice value="Вклейка фото" hotkey="4"/>
+          <Choice value="Физические изменения" hotkey="5"/>
+          <Choice value="Повреждён" hotkey="6"/>
+          <Choice value="Другое" hotkey="7"/>
+        </Choices>
+
+        <TextArea name="comment_defects" toName="img" placeholder="Опишите дефект"
+                  visibleWhen="choice-selected" whenTagName="defects" whenChoiceValue="Другое"/>
+      </View>
+      <View visibleWhen="choice-selected" whenTagName="modality" whenChoiceValue="Не определяю">
+        <Header value="Шаг пропущен — тип не определён"/>
+      </View>
+    </View>
+
+    <!-- Шаг 3: читаемость -->
+    <View visibleWhen="choice-selected" whenTagName="wz" whenChoiceValue="readability">
+      <View visibleWhen="choice-selected" whenTagName="modality"
+            whenChoiceValue="Оригинал,Ксерокопия,Распечатка,Дисплей,Дипфейк,Граф. редактор">
+        <Header value="3. Читаемость — что мешает читать?"/>
+        <Choices name="readability" toName="img" choice="multiple" showInline="true">
+          <Choice value="Блики" hotkey="1"/>
+          <Choice value="Блюр" hotkey="2"/>
+          <Choice value="Плохое освещение" hotkey="3"/>
+          <Choice value="Перекрыто" hotkey="4"/>
+          <Choice value="Не все поля в кадре" hotkey="5"/>
+          <Choice value="Печатный текст закрыт подписью/рукописным" hotkey="6"/>
+        </Choices>
+      </View>
+      <View visibleWhen="choice-selected" whenTagName="modality" whenChoiceValue="Не определяю">
+        <Header value="Шаг пропущен — тип не определён"/>
+      </View>
+    </View>
+
+    <!-- Шаг 4: резидентство -->
+    <View visibleWhen="choice-selected" whenTagName="wz" whenChoiceValue="resident">
+      <View visibleWhen="choice-selected" whenTagName="modality"
+            whenChoiceValue="Оригинал,Ксерокопия,Распечатка,Дисплей,Дипфейк,Граф. редактор">
+        <Header value="4. Резидентство"/>
+        <Choices name="resident" toName="img" choice="single" required="true" requiredMessage="Укажите резидентство">
+          <Choice value="Паспорт РФ" hotkey="1"/>
+          <Choice value="Документ нерезидента" hotkey="2"/>
+          <Choice value="Не определяю" hotkey="3"/>
+        </Choices>
+      </View>
+      <View visibleWhen="choice-selected" whenTagName="modality" whenChoiceValue="Не определяю">
+        <Header value="Шаг пропущен — тип не определён"/>
+      </View>
+    </View>
+
+  </View>
+</View>

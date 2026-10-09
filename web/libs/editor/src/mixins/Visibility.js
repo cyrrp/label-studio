@@ -1,4 +1,5 @@
 import { getParent, types } from "mobx-state-tree";
+import { isHiddenOnlyByWizard } from "../custom/visibility";
 
 /**
  * Controls visibility of the element depending on other tags.
@@ -52,7 +53,7 @@ const VisibilityMixin = types
             const tag = self.annotation.names.get(tagName);
 
             if (!tag?.hasChoiceSelection && !choiceValue?.length) return false;
-            if (tag.isVisible === false) return false;
+            if (tag.isVisible === false && !isHiddenOnlyByWizard(tag)) return false;
 
             return tag.hasChoiceSelection(choiceValue?.split(","), tag.selectedValues());
           },

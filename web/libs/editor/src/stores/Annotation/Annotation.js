@@ -2,6 +2,7 @@ import { throttle } from "@humansignal/core/lib/utils/lodash-replacements";
 import { destroy, detach, flow, getEnv, getParent, getRoot, isAlive, onSnapshot, types } from "mobx-state-tree";
 import { ff } from "@humansignal/core";
 import { errorBuilder } from "../../core/DataValidator/ConfigValidator";
+import { guardedHotkey } from "../../custom/visibility";
 import { guidGenerator } from "../../core/Helpers";
 import { Hotkey } from "../../core/Hotkey";
 import TimeTraveller from "../../core/TimeTraveller";
@@ -927,7 +928,7 @@ const _Annotation = types
       // Hotkeys setup
       self.traverseTree((node) => {
         if (node && node.onHotKey && node.hotkey) {
-          hotkeys.addKey(node.hotkey, node.onHotKey, undefined, node.hotkeyScope);
+          hotkeys.addKey(node.hotkey, guardedHotkey(node), undefined, node.hotkeyScope);
         }
       });
 
@@ -939,7 +940,7 @@ const _Annotation = types
           else audioNode = node;
 
           node.hotkey = comb;
-          hotkeys.addKey(comb, node.onHotKey, "Play an audio", Hotkey.ALL_SCOPES);
+          hotkeys.addKey(comb, guardedHotkey(node), "Play an audio", Hotkey.ALL_SCOPES);
 
           audiosNum++;
         }
@@ -955,13 +956,13 @@ const _Annotation = types
           if (!comb) return;
 
           node.hotkey = comb;
-          hotkeys.addKey(node.hotkey, node.onHotKey);
+          hotkeys.addKey(node.hotkey, guardedHotkey(node));
         }
       });
 
       if (audioNode && audiosNum > 1) {
         audioNode.hotkey = `${mod}+1`;
-        hotkeys.addKey(audioNode.hotkey, audioNode.onHotKey);
+        hotkeys.addKey(audioNode.hotkey, guardedHotkey(audioNode));
         hotkeys.removeKey(mod);
       }
 
