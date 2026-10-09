@@ -18,4 +18,6 @@ export type APIUser = {
   allow_newsletters: boolean;
   date_joined: string;
   permissions?: Ability[];
+  /** Organization member role of the current user (OW/AD/MA/RE/AN) */
+  role?: string;
 };

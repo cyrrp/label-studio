@@ -1,6 +1,7 @@
 import { formatDistance } from "date-fns";
 import { useCallback, useEffect, useState } from "react";
 import { Userpic } from "@humansignal/ui";
+import { MEMBER_ROLE_LABELS } from "@humansignal/core/lib/utils/member-roles";
 import { Pagination, Spinner } from "../../../components";
 import { usePage, usePageSize } from "../../../components/Pagination/Pagination";
 import { useAPI } from "../../../providers/ApiProvider";
@@ -9,7 +10,7 @@ import { isDefined } from "../../../utils/helpers";
 import "./PeopleList.scss";
 import { CopyableTooltip } from "../../../components/CopyableTooltip/CopyableTooltip";
 
-export const PeopleList = ({ onSelect, selectedUser, defaultSelected }) => {
+export const PeopleList = ({ onSelect, selectedUser, defaultSelected, updatedMember }) => {
   const api = useAPI();
   const [usersList, setUsersList] = useState();
   const [currentPage] = usePage("page", 1);
@@ -51,9 +52,17 @@ export const PeopleList = ({ onSelect, selectedUser, defaultSelected }) => {
     if (isDefined(defaultSelected) && usersList) {
       const selected = usersList.find(({ user }) => user.id === Number(defaultSelected));
 
-      if (selected) selectUser(selected.user);
+      if (selected) selectUser({ ...selected.user, role: selected.role });
     }
   }, [usersList, defaultSelected]);
+
+  // Apply a role update to the matching row without a full refetch
+  useEffect(() => {
+    if (!updatedMember) return;
+    setUsersList((list) =>
+      list?.map((member) => (member.user.id === updatedMember.id ? { ...member, role: updatedMember.role } : member)),
+    );
+  }, [updatedMember]);
 
   return (
     <>
@@ -65,17 +74,18 @@ export const PeopleList = ({ onSelect, selectedUser, defaultSelected }) => {
                 <div className={cn("people-list").elem("column").mix("avatar").toClassName()} />
                 <div className={cn("people-list").elem("column").mix("email").toClassName()}>Email</div>
                 <div className={cn("people-list").elem("column").mix("name").toClassName()}>Name</div>
+                <div className={cn("people-list").elem("column").mix("role").toClassName()}>Role</div>
                 <div className={cn("people-list").elem("column").mix("last-activity").toClassName()}>Last Activity</div>
               </div>
               <div className={cn("people-list").elem("body").toClassName()}>
-                {usersList.map(({ user }) => {
+                {usersList.map(({ user, role }) => {
                   const active = user.id === selectedUser?.id;
 
                   return (
                     <div
                       key={`user-${user.id}`}
                       className={cn("people-list").elem("user").mod({ active }).toClassName()}
-                      onClick={() => selectUser(user)}
+                      onClick={() => selectUser({ ...user, role })}
                     >
                       <div className={cn("people-list").elem("field").mix("avatar").toClassName()}>
                         <CopyableTooltip title={`User ID: ${user.id}`} textForCopy={user.id}>
@@ -85,6 +95,9 @@ export const PeopleList = ({ onSelect, selectedUser, defaultSelected }) => {
                       <div className={cn("people-list").elem("field").mix("email").toClassName()}>{user.email}</div>
                       <div className={cn("people-list").elem("field").mix("name").toClassName()}>
                         {user.first_name} {user.last_name}
+                      </div>
+                      <div className={cn("people-list").elem("field").mix("role").toClassName()}>
+                        {MEMBER_ROLE_LABELS[role] ?? role}
                       </div>
                       <div className={cn("people-list").elem("field").mix("last-activity").toClassName()}>
                         {formatDistance(new Date(user.last_activity), new Date(), { addSuffix: true })}

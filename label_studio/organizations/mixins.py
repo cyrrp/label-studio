@@ -12,3 +12,9 @@ class OrganizationMemberMixin:
         if user.active_organization_id == self.organization_id:
             return True
         return False
+
+    @cached_property
+    def is_admin(self):
+        from organizations.models import OrganizationMemberRole
+
+        return self.role in (OrganizationMemberRole.OWNER, OrganizationMemberRole.ADMINISTRATOR)

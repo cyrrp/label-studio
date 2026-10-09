@@ -18,6 +18,7 @@ from organizations.serializers import (
     OrganizationMemberListParamsSerializer,
     OrganizationMemberListSerializer,
     OrganizationMemberSerializer,
+    OrganizationMemberUpdateSerializer,
     OrganizationSerializer,
 )
 from projects.models import Project
@@ -269,15 +270,39 @@ class OrganizationMemberListAPI(generics.ListAPIView):
         },
     ),
 )
+@method_decorator(
+    name='patch',
+    decorator=extend_schema(
+        tags=['Organizations'],
+        summary='Update organization member role',
+        description='Update the role of a member in the organization. Restricted to owners and admins.',
+        parameters=[
+            OpenApiParameter(
+                name='user_pk',
+                type=OpenApiTypes.INT,
+                location='path',
+                description='A unique integer value identifying the user to update in the organization.',
+            ),
+        ],
+        request=OrganizationMemberUpdateSerializer,
+        responses={200: OrganizationMemberSerializer()},
+        extensions={
+            'x-fern-sdk-group-name': ['organizations', 'members'],
+            'x-fern-sdk-method-name': 'update',
+            'x-fern-audiences': ['public'],
+        },
+    ),
+)
 class OrganizationMemberDetailAPI(GetParentObjectMixin, generics.RetrieveDestroyAPIView):
     permission_required = ViewClassPermission(
         GET=all_permissions.organizations_view,
+        PATCH=all_permissions.organizations_change,
         DELETE=all_permissions.organizations_change,
     )
     parent_queryset = Organization.objects.all()
     parser_classes = (JSONParser, FormParser, MultiPartParser)
     serializer_class = OrganizationMemberSerializer
-    http_method_names = ['delete', 'get']
+    http_method_names = ['delete', 'get', 'patch']
 
     @property
     def permission_classes(self):
@@ -299,6 +324,22 @@ class OrganizationMemberDetailAPI(GetParentObjectMixin, generics.RetrieveDestroy
         queryset = self.get_queryset()
         member = get_object_or_404(queryset, user=user_pk)
         self.check_object_permissions(request, member)
+        serializer = self.get_serializer(member)
+        return Response(serializer.data)
+
+    def patch(self, request, pk=None, user_pk=None):
+        org = self.parent_object
+        if not request.user.is_organization_admin(org.pk):
+            raise PermissionDenied('Only organization owners and admins can change member roles')
+
+        member = get_object_or_404(self.get_queryset(), user=user_pk)
+        if member.deleted_at is not None:
+            raise NotFound('Member not found')
+
+        update_serializer = OrganizationMemberUpdateSerializer(member, data=request.data, partial=True)
+        update_serializer.is_valid(raise_exception=True)
+        update_serializer.save()
+
         serializer = self.get_serializer(member)
         return Response(serializer.data)
 

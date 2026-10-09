@@ -15,8 +15,21 @@ logger = logging.getLogger(__name__)
 OrganizationMemberMixin = load_func(settings.ORGANIZATION_MEMBER_MIXIN)
 
 
+class OrganizationMemberRole(models.TextChoices):
+    OWNER = 'OW', _('Owner')
+    ADMINISTRATOR = 'AD', _('Administrator')
+    MANAGER = 'MA', _('Manager')
+    REVIEWER = 'RE', _('Reviewer')
+    ANNOTATOR = 'AN', _('Annotator')
+
+
+ROLE_CHOICES = OrganizationMemberRole.choices
+
+
 class OrganizationMember(OrganizationMemberMixin, models.Model):
     """ """
+
+    Role = OrganizationMemberRole
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='om_through', help_text='User ID'
@@ -24,6 +37,8 @@ class OrganizationMember(OrganizationMemberMixin, models.Model):
     organization = models.ForeignKey(
         'organizations.Organization', on_delete=models.CASCADE, help_text='Organization ID'
     )
+
+    role = models.CharField(_('role'), max_length=2, choices=ROLE_CHOICES, default=OrganizationMemberRole.MANAGER)
 
     created_at = models.DateTimeField(_('created at'), auto_now_add=True)
     updated_at = models.DateTimeField(_('updated at'), auto_now=True)
@@ -138,13 +153,13 @@ class Organization(OrganizationMixin, models.Model):
     def has_permission(self, user):
         return OrganizationMember.objects.filter(user=user, organization=self, deleted_at__isnull=True).exists()
 
-    def add_user(self, user):
+    def add_user(self, user, role=OrganizationMemberRole.MANAGER):
         if self.users.filter(pk=user.pk).exists():
             logger.debug('User already exists in organization.')
             return
 
         with transaction.atomic():
-            om = OrganizationMember(user=user, organization=self)
+            om = OrganizationMember(user=user, organization=self, role=role)
             om.save()
 
             return om

@@ -19,6 +19,7 @@ export const PeoplePage = () => {
   const apiSettingsModal = useRef();
   const toast = useToast();
   const [selectedUser, setSelectedUser] = useState(null);
+  const [updatedMember, setUpdatedMember] = useState(null);
   const [invitationOpen, setInvitationOpen] = useState(false);
 
   useUpdatePageTitle("People");
@@ -28,6 +29,14 @@ export const PeoplePage = () => {
       setSelectedUser(user);
 
       localStorage.setItem("selectedUser", user?.id);
+    },
+    [setSelectedUser],
+  );
+
+  const onRoleUpdated = useCallback(
+    (userId, role) => {
+      setSelectedUser((user) => (user?.id === userId ? { ...user, role } : user));
+      setUpdatedMember({ id: userId, role });
     },
     [setSelectedUser],
   );
@@ -83,11 +92,12 @@ export const PeoplePage = () => {
         <PeopleList
           selectedUser={selectedUser}
           defaultSelected={defaultSelected}
+          updatedMember={updatedMember}
           onSelect={(user) => selectUser(user)}
         />
 
         {selectedUser ? (
-          <SelectedUser user={selectedUser} onClose={() => selectUser(null)} />
+          <SelectedUser user={selectedUser} onRoleUpdated={onRoleUpdated} onClose={() => selectUser(null)} />
         ) : (
           isFF(FF_LSDV_E_297) && <HeidiTips collection="organizationPage" />
         )}

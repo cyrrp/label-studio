@@ -15,7 +15,7 @@ from django.dispatch import receiver
 from django.utils import timezone
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
-from organizations.models import Organization
+from organizations.models import Organization, OrganizationMemberRole
 from rest_framework.authtoken.models import Token
 from users.functions import hash_upload
 from users.functions.last_activity import get_user_last_activity, schedule_activity_sync, set_user_last_activity
@@ -176,8 +176,25 @@ class User(UserMixin, AbstractBaseUser, PermissionsMixin, UserLastActivityMixin)
             else:
                 return settings.HOSTNAME + self.avatar.url
 
-    def is_organization_admin(self, org_pk):
-        return True
+    def is_organization_admin(self, org_pk=None):
+        """True when the user has an owner/admin membership in the given organization
+        (defaults to the user's active organization). Organization.created_by always counts."""
+        if not getattr(self, 'is_authenticated', False) or not self.pk:
+            return False
+        org_pk = org_pk or self.active_organization_id
+        if not org_pk:
+            return False
+        organization = fast_first(Organization.objects.filter(pk=org_pk))
+        if organization is None:
+            return False
+        # created_by is SET_NULL, so an orphaned organization has no owner
+        if organization.created_by_id is not None and organization.created_by_id == self.pk:
+            return True
+        return self.om_through.filter(
+            organization_id=org_pk,
+            deleted_at__isnull=True,
+            role__in=(OrganizationMemberRole.OWNER, OrganizationMemberRole.ADMINISTRATOR),
+        ).exists()
 
     def active_organization_annotations(self):
         return self.annotations.filter(project__organization=self.active_organization)

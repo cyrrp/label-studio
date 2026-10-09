@@ -27,6 +27,7 @@ class AllPermissions(BaseModel):
     tasks_view: str = 'tasks.view'
     tasks_change: str = 'tasks.change'
     tasks_delete: str = 'tasks.delete'
+    tasks_assign: str = 'tasks.assign'
     views_reset: str = 'views.reset'
     annotations_create: str = 'annotations.create'
     annotations_view: str = 'annotations.view'
@@ -83,3 +84,13 @@ def make_perm(name, pred, overwrite=False):
 
 for _, permission_name in all_permissions:
     make_perm(permission_name, rules.is_authenticated)
+
+
+def _can_assign_tasks(user):
+    # owners/admins/managers may assign tasks; annotators and reviewers may not
+    return bool(rules.is_authenticated(user)) and not (
+        getattr(user, 'is_annotator', False) or getattr(user, 'is_reviewer', False)
+    )
+
+
+make_perm(all_permissions.tasks_assign, _can_assign_tasks, overwrite=True)
