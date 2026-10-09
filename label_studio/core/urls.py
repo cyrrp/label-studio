@@ -66,6 +66,7 @@ urlpatterns = [
     re_path(r'^', include('data_export.urls')),
     re_path(r'^', include('users.urls')),
     re_path(r'^', include('tasks.urls')),
+    re_path(r'^', include('comments.urls')),
     re_path(r'^', include('io_storages.urls')),
     re_path(r'^', include('ml.urls')),
     re_path(r'^', include('webhooks.urls')),

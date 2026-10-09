@@ -58,7 +58,10 @@ export const FF_INTERACTIVE_JSON_VIEWER = "fflag_feat_front_interactive_json_vie
 export const FF_FIT_1304_STRICT_OVERLAP = "fflag_feat_all_fit_1304_strict_overlap";
 
 // Customize flags
-const flags = {};
+const flags = {
+  // Comments UI is enabled in this build; the comments API is available in Community Edition
+  [FF_DEV_2887]: true,
+};
 
 function getFeatureFlags() {
   return Object.assign(window.APP_SETTINGS?.feature_flags || {}, flags);
